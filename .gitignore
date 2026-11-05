@@ -1,0 +1,10 @@
+# Auralis — nothing secret should ever be committed.
+# API keys live only in the browser (localStorage), never in this repo.
+*.log
+.DS_Store
+Thumbs.db
+node_modules/
+dist/
+.env
+.env.*
+*.local

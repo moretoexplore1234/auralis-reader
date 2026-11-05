@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auralis — Read Anything Aloud</title>
+<meta name="description" content="Paste any public web page or article link. Auralis reads it aloud in a realistic voice. Free forever — no paywall, no account.">
+<meta property="og:title" content="Auralis — Read Anything Aloud">
+<meta property="og:description" content="Paste any public article link. Auralis reads it aloud in a realistic voice. Free forever.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0F0E0C">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23C9A96A'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' font-family='Georgia,serif' fill='%230F0E0C'%3EA%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,560;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,560&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="#top" aria-label="Auralis — home">
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <span><span class="brand-name">Auralis</span>
+      <span class="brand-tag">Read anything aloud</span></span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="#reader">Reader</a>
+      <a href="#library">Library</a>
+      <a href="#voices">Voices</a>
+      <a href="#ai-apps">AI Apps</a>
+      <a class="btn btn-coffee btn-small" id="coffeeBtnHeader" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap hero-inner">
+      <p class="eyebrow">A listening room for the open web</p>
+      <h1>Paste a link.<br><em>Hear it read aloud.</em></h1>
+      <p class="lede">Auralis turns any public article or web page into a calm, realistic listening experience — with word-by-word highlighting, your choice of voice, and your own AI apps on top. Free forever.</p>
+      <p class="free-badge"><span class="dot" aria-hidden="true"></span> Free forever · No account · No paywall · Your keys never leave your browser</p>
+
+      <form class="url-bar" id="urlForm" role="search" aria-label="Read a web page aloud">
+        <label class="sr-only" for="urlInput">Article or web page URL</label>
+        <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="Paste an article link — https://example.com/article…" required>
+        <button class="btn btn-gold" type="submit" id="readUrlBtn">▶&nbsp; Listen</button>
+      </form>
+
+      <div class="hero-actions">
+        <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
+        <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
+        <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
+        <button class="btn btn-ghost" type="button" id="surpriseBtn">✦ Surprise me</button>
+      </div>
+      <p class="hero-note">Works with public pages. <strong>Paywalled or blocked pages can't be read</strong> — we'll say so honestly and offer paste-text instead. No login, no tracking.</p>
+
+      <div class="status" id="statusBox" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <!-- SAMPLES -->
+  <section class="samples" id="samplesSection" aria-label="Sample articles">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Try it in one tap</h2>
+        <p>Three original samples — no copyrighted text.</p>
+      </div>
+      <div class="sample-grid" id="sampleGrid"><!-- filled by app.js --></div>
+    </div>
+  </section>
+
+  <!-- READER -->
+  <section class="reader" id="reader" aria-label="Reader" hidden>
+    <div class="wrap">
+      <div class="reader-card">
+        <div class="reader-top">
+          <p class="reader-source" id="readerSource"></p>
+          <h2 id="readerTitle">Untitled</h2>
+          <p class="reader-byline" id="readerByline"></p>
+        </div>
+        <div class="progress-wrap" aria-label="Reading progress">
+          <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="progress-labels"><span id="progressText">0% read</span><span id="timeRemaining">— remaining</span></div>
+        </div>
+
+        <div class="player" role="group" aria-label="Playback controls">
+          <div class="player-controls">
+            <button class="player-btn" id="prevSentenceBtn" type="button" title="Previous sentence" aria-label="Previous sentence">⏮</button>
+            <button class="player-btn primary" id="playPauseBtn" type="button" title="Play or pause" aria-label="Play or pause">▶</button>
+            <button class="player-btn" id="stopBtn" type="button" title="Stop" aria-label="Stop">■</button>
+            <button class="player-btn" id="nextSentenceBtn" type="button" title="Next sentence" aria-label="Next sentence">⏭</button>
+          </div>
+          <div class="voice-controls">
+            <label>Voice
+              <select id="voiceSelect" aria-label="Choose a voice"><option value="">Loading voices…</option></select>
+            </label>
+            <label>Speed <span class="speed-readout" id="speedReadout">1.0×</span>
+              <input type="range" id="rateRange" min="0.5" max="1.5" step="0.05" value="1" aria-label="Reading speed">
+            </label>
+            <label>Pitch
+              <input type="range" id="pitchRange" min="0.5" max="1.5" step="0.1" value="1" aria-label="Voice pitch">
+            </label>
+          </div>
+          <div class="reader-actions">
+            <button class="btn btn-dark btn-small" type="button" id="saveToLibraryBtn">＋ Save to Library</button>
+            <button class="btn btn-dark btn-small" type="button" id="copyTextBtn">⧉ Copy text</button>
+          </div>
+        </div>
+
+        <article class="article-body" id="articleBody" tabindex="0" aria-label="Article text"></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS + COST -->
+  <section class="panel" id="how">
+    <div class="wrap">
+      <div class="panel-head">
+        <p class="eyebrow">How it works</p>
+        <h2>Three steps. Zero dollars.</h2>
+        <p>Auralis is a single static page. There is no server, no database, no account — and nothing to pay for unless you choose a premium voice provider yourself.</p>
+      </div>
+      <div class="steps">
+        <div class="step"><div class="step-num">01</div><h3>Paste a link</h3><p>Any public article or page. Auralis extracts the real article text and strips the nav, ads and clutter.</p></div>
+        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Your device's built-in voices are free and ready now. Add an ElevenLabs or OpenAI key later if you want a studio voice.</p></div>
+        <div class="step"><div class="step-num">03</div><h3>Listen &amp; ask</h3><p>Follow along with word highlighting, save it to your Library, or ask one of your AI apps to summarise it.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Cost">
+    <div class="wrap">
+      <div class="card">
+        <h3>What it costs to run</h3>
+        <p>Everything Auralis needs is free. Premium voices are optional, bring-your-own-key, and billed only by the provider you choose.</p>
+        <table class="cost-table">
+          <thead><tr><th>Thing</th><th>Provider</th><th>Cost</th></tr></thead>
+          <tbody>
+            <tr><td>Hosting (GitHub Pages)</td><td>GitHub</td><td>$0</td></tr>
+            <tr><td>Built-in voices (Web Speech API)</td><td>Your browser / OS</td><td>$0</td></tr>
+            <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
+            <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
+            <tr><td>ElevenLabs / OpenAI / Azure / Google voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIBRARY -->
+  <section class="panel" id="library">
+    <div class="wrap">
+      <div class="panel-head">
+        <p class="eyebrow">Your library</p>
+        <h2>Saved articles, saved place</h2>
+        <p>Saved on this device only, in your browser. Auralis never uploads your library anywhere.</p>
+      </div>
+      <div class="library-list" id="libraryList"></div>
+      <p class="empty-note" id="libraryEmpty">Nothing saved yet. Read something, then tap <strong>＋ Save to Library</strong> — your place is kept automatically.</p>
+    </div>
+  </section>
+
+  <!-- VOICES -->
+  <section class="panel" id="voices">
+    <div class="wrap">
+      <div class="panel-head">
+        <p class="eyebrow">Voices</p>
+        <h2>Free voices now. Studio voices if you want them.</h2>
+        <p>The free voices built into your browser and operating system already sound remarkably human — and they cost nothing. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <span class="pill free">Free · Built in</span>
+          <h3 style="margin-top:10px">Browser voices</h3>
+          <p>Tap any voice to hear a preview. Premium / natural voices are listed first when your device has them.</p>
+          <div class="voice-list" id="voiceList"><p class="muted">Loading voices… If this stays empty, your browser may not expose speech voices — try Chrome, Edge or Safari.</p></div>
+        </div>
+        <div class="card">
+          <span class="pill byo">Optional · Bring your own key</span>
+          <h3 style="margin-top:10px">Premium voice provider</h3>
+          <p>Choose a provider, paste your key, test it. Auralis uses it only for narration you start.</p>
+          <div class="provider-grid" role="group" aria-label="Premium voice provider">
+            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Browser voice</strong><span>Free · default</span></button>
+            <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most realistic · your key</span></button>
+            <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Alloy, Nova &amp; more · your key</span></button>
+            <button type="button" class="provider-card" data-provider="azure" aria-pressed="false"><strong>Azure Speech</strong><span>Neural voices · your key</span></button>
+            <button type="button" class="provider-card" data-provider="google" aria-pressed="false"><strong>Google Cloud TTS</strong><span>WaveNet / Neural2 · your key</span></button>
+          </div>
+          <div id="providerForm" style="margin-top:16px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI APPS HUB -->
+  <section class="panel" id="ai-apps">
+    <div class="wrap">
+      <div class="panel-head">
+        <p class="eyebrow">Personal AI apps</p>
+        <h2>Plug in any AI. Ask it about anything you read.</h2>
+        <p>Add any OpenAI-compatible endpoint — OpenAI, Groq, OpenRouter, Ollama, LM Studio, your own server. Each app is a card you can enable, test, use and delete. <strong>Keys stay in this browser only.</strong></p>
+      </div>
+      <div class="grid-2" style="margin-bottom:16px">
+        <div class="card">
+          <h3>Add an AI app</h3>
+          <form id="aiAppForm">
+            <div class="field"><label for="appName">Name</label><input id="appName" placeholder="e.g. My Summariser" required maxlength="60"></div>
+            <div class="field"><label for="appBaseUrl">Base URL</label><input id="appBaseUrl" type="url" placeholder="https://api.openai.com/v1" required>
+              <p class="hint">OpenAI-compatible <code>/chat/completions</code> endpoint. Local examples: <code>http://localhost:11434/v1</code> (Ollama), <code>http://localhost:1234/v1</code> (LM Studio).</p></div>
+            <div class="field-row">
+              <div class="field"><label for="appModel">Model</label><input id="appModel" placeholder="gpt-4o-mini" required></div>
+              <div class="field"><label for="appPurpose">Purpose</label>
+                <select id="appPurpose"><option value="Summarize">Summarize</option><option value="Explain">Explain like I'm 5</option><option value="Ask">Ask a question</option><option value="Translate">Translate</option></select>
+              </div>
+            </div>
+            <div class="field"><label for="appKey">API key <span style="font-weight:400;color:var(--muted)">(stored locally only)</span></label><input id="appKey" type="password" autocomplete="off" placeholder="sk-… (leave blank for local models)"></div>
+            <div class="field"><label for="appNotes">Notes <span style="font-weight:400;color:var(--muted)">(optional)</span></label><input id="appNotes" placeholder="What is this app for?" maxlength="140"></div>
+            <button class="btn btn-gold btn-block" type="submit">＋ Add AI app</button>
+          </form>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-small" type="button" id="exportAppsBtn">⇩ Export apps (JSON)</button>
+            <button class="btn btn-ghost btn-small" type="button" id="importAppsBtn">⇪ Import apps (JSON)</button>
+            <input type="file" id="importAppsInput" accept=".json,application/json" hidden>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Use an app on the article you're reading</h3>
+          <p>Open an article first, then pick an action. The article text is sent only to the app you choose, only when you tap Run.</p>
+          <div class="field"><label for="aiAction">Action</label>
+            <select id="aiAction"><option value="Summarize">Summarize this article</option><option value="Explain">Explain it like I'm 5</option><option value="Ask">Ask a question about it</option><option value="Translate">Translate it</option></select>
+          </div>
+          <div class="field" id="aiQuestionField" hidden><label for="aiQuestion">Your question</label><input id="aiQuestion" placeholder="What is the main argument?" maxlength="500"></div>
+          <div class="field" id="aiLangField" hidden><label for="aiLang">Translate to</label><input id="aiLang" placeholder="e.g. Spanish, French, Hebrew" maxlength="60"></div>
+          <div class="field"><label for="aiAppSelect">Which app?</label><select id="aiAppSelect"><option value="">— Add an AI app first —</option></select></div>
+          <button class="btn btn-gold btn-block" type="button" id="runAiBtn">Run on this article</button>
+          <p class="muted" style="margin-top:10px">No article open yet? <a href="#top" id="aiNoArticleLink">Paste a link or open a sample first.</a></p>
+        </div>
+      </div>
+      <div class="app-grid" id="appGrid"></div>
+      <div class="ai-output" id="aiOutput" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <!-- COFFEE -->
+  <section class="coffee">
+    <div class="wrap">
+      <div class="coffee-card">
+        <p class="eyebrow" style="text-align:center">Keep it free</p>
+        <h2>Auralis is free — coffee keeps it free.</h2>
+        <p>No paywall, no account, no ads. If Auralis saved you time today, a coffee is the kindest way to say thanks — it pays for nothing but the love that keeps this little reader alive.</p>
+        <a class="btn btn-coffee" id="coffeeBtnFooter" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener" style="font-size:1.05rem;padding:14px 26px">☕ Buy Me a Coffee</a>
+        <p class="muted" id="coffeeNote" style="margin:16px 0 0;font-size:.85rem;color:var(--muted)">Set your Buy Me a Coffee username in <code>config.js</code> to point this button at your page.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License</span>
+    <nav aria-label="Footer">
+      <a href="#how">How it works</a>
+      <a href="#library">Library</a>
+      <a href="#ai-apps">AI Apps</a>
+      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+      <a id="coffeeLinkFooter" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
+    </nav>
+  </div>
+</footer>
+
+<!-- Paste text modal -->
+<div class="modal" id="pasteModal" role="dialog" aria-modal="true" aria-labelledby="pasteModalTitle" hidden>
+  <div class="modal-card">
+    <h2 id="pasteModalTitle">Paste text to hear read aloud</h2>
+    <p>Paste any text — an article, a document, your own notes. Nothing leaves your browser.</p>
+    <div class="field"><label for="pasteTitle">Title (optional)</label><input id="pasteTitle" placeholder="e.g. Notes on the morning news" maxlength="160"></div>
+    <div class="field"><label for="pasteText">Text</label><textarea id="pasteText" rows="10" placeholder="Paste your text here…" style="min-height:180px"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" type="button" id="pasteCancelBtn">Cancel</button>
+      <button class="btn btn-gold" type="button" id="pasteReadBtn">▶ Listen to this text</button>
+    </div>
+  </div>
+</div>
+
+<!-- AI app edit is inline; generic confirm lives in JS via toast -->
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="sr-only" aria-live="polite" id="srStatus"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
