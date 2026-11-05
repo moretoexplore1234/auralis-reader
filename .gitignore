@@ -8,3 +8,5 @@ dist/
 .env
 .env.*
 *.local
+.local-keep/
+pages.yml.bak
