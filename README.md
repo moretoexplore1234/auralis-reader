@@ -1,10 +1,12 @@
 # Auralis — Read Anything Aloud
 
-> **Paste any public web page or article link. Auralis reads it aloud in a realistic voice. Free forever.**
+> **Paste any public web page, article, or X post. Auralis reads it aloud in a realistic voice. Free forever.**
 
-No account. No paywall. No server. A single static page you can host for **$0** on GitHub Pages — and use for $0, with the realistic voices already built into your browser.
+No account. No paywall. No server. Just open it and listen.
 
-**Live demo:** `https://<your-github-username>.github.io/auralis-reader/` *(replace with your repo URL after publishing — see [Deploy](#deploy-for-free-github-pages) below)*
+**Try it now:** https://moretoexplore1234.github.io/auralis-reader/
+
+**Get the app:** https://github.com/moretoexplore1234/auralis-reader/releases — GitHub is the app store for Auralis. Every version lives under Releases.
 
 ---
 
@@ -12,51 +14,54 @@ No account. No paywall. No server. A single static page you can host for **$0** 
 
 | Feature | How it works |
 |---|---|
-| **Read any public page** | Paste a URL. Auralis fetches the page (direct, then the free Jina Reader proxy, then AllOrigins) and extracts the real article text, stripping nav, ads and clutter. |
-| **Honest about limits** | Paywalled, bot-blocked or empty pages are **never** bypassed. Auralis says so plainly and offers Paste Text instead. |
+| **Read any public page** | Paste a URL. Auralis fetches the page and extracts the real article text, stripping nav, ads and clutter. |
+| **Read long X posts & threads** | Paste an X / Twitter link (`x.com/…/status/…`). Long posts and whole threads are read aloud start to finish, with the author shown. |
+| **Honest about limits** | Paywalled, protected, deleted or bot-blocked pages are **never** bypassed. Auralis says so plainly and offers Paste Text instead. |
 | **Paste text & upload** | Paste any text, or upload `.txt`, `.md` or `.html` files. Nothing leaves your browser. |
-| **Realistic free voices** | The Web Speech API voices built into Chrome, Edge and Safari — natural/neural voices listed first, with preview, speed (0.5–1.5×) and pitch controls. |
-| **Karaoke highlighting** | Word-by-word highlighting follows the narration, with a progress bar and time remaining. Play / pause / stop / skip a sentence. |
+| **Realistic free voices** | The voices built into Chrome, Edge and Safari — natural voices listed first, with preview, speed (0.5–1.5×) and pitch controls. |
+| **Word-by-word highlighting** | The words light up as they're spoken, with a progress bar and time remaining. Play / pause / stop / skip a sentence. |
 | **Premium voices (optional)** | Bring your own key for **ElevenLabs, OpenAI TTS, Azure Speech or Google Cloud TTS**. Test voice included. Keys live only in your browser. |
-| **Personal AI Apps hub** | Add **any OpenAI-compatible endpoint** — OpenAI, Groq, OpenRouter, Ollama, LM Studio, your own server. Summarize, Explain like I'm 5, Ask a question, Translate. Enable / test / delete, import & export as JSON. |
-| **Library** | Save articles with your place kept, resume later, delete anytime. Stored in `localStorage` on your device only. |
-| **Buy Me a Coffee** | One gold button, header + footer. Free app, coffee-funded — no paywall, ever. |
+| **Reader Mode** | One tap for a clean, distraction-free view — large text (A− / A+), Light / Sepia / Dark themes, narrow centred column. |
+| **Easy listening** | Sleep timer (15 / 30 / 60 min), skip back/forward 15 seconds, speed presets (Slow & clear / Normal / Fast), and a one-tap **Summarize this** button in the Reader. |
+| **Human voices only** | Robotic voices are hidden by default. Every voice shows a plain-language description (“warm, friendly American woman”) and a Preview button, with ★ Recommended on the top pick. |
+| **Personal AI apps** | Add **any AI that speaks the OpenAI format** — OpenAI, Groq, OpenRouter, Ollama, LM Studio, your own server. Ask it to summarise, explain like you're five, answer a question, or translate what you're reading. |
+| **Library** | Save articles with your place kept, resume later, delete anytime. Stored on your device only. |
+| **Download & install** | Use it in the browser, install it as an app, or download the files — see [Get the app](#get-the-app) below. |
 
-## Screenshots
+## Get the app
 
-> Screenshots go here once the site is live — take them from the deployed demo:
->
-> 1. `docs/screenshots/hero.png` — hero with the URL bar
-> 2. `docs/screenshots/reader.png` — reader view with word highlighting
-> 3. `docs/screenshots/ai-apps.png` — the AI Apps hub
->
-> (No screenshots are bundled yet; the app ships without them so the repo stays light.)
+Three ways — all free, all take under a minute:
 
-## Cost — $0 to run
+**1. Use it now — no download needed**
+Open https://moretoexplore1234.github.io/auralis-reader/ in any browser, on phone, tablet or computer. Paste a link and press Listen.
 
-| Thing | Provider | Cost |
-|---|---|---|
-| Hosting | GitHub Pages | **$0** |
-| Built-in voices | Your browser / OS (Web Speech API) | **$0** |
-| Article extraction | Browser + Jina Reader / AllOrigins (free, no key) | **$0** |
-| Library & settings | Your browser (`localStorage`) | **$0** |
-| Premium voices | ElevenLabs / OpenAI / Azure / Google — optional, your key | Pay your provider only |
-| AI apps | Your endpoint of choice — optional, your key | Pay your provider only |
+**2. Install as an app**
+1. Open the link above in Chrome or Edge on your phone or computer.
+2. Tap the **⋮ menu** (or the install icon in the address bar).
+3. Tap **“Install app”** or **“Add to Home screen.”**
+It appears on your home screen like any app and opens full-screen. (On iPhone Safari: Share → Add to Home Screen.)
 
-There is no backend, no database, no analytics, no tracking, and no code that phones home.
+**3. Download the files**
+1. Tap **Download the files (ZIP)**: https://github.com/moretoexplore1234/auralis-reader/archive/refs/heads/main.zip
+2. Unzip the folder it downloads.
+3. Double-click **index.html** — Auralis opens in your browser.
 
-## Use it
+Every version, with notes, lives at https://github.com/moretoexplore1234/auralis-reader/releases
 
-1. Open the demo link (or open `index.html` — most features work from `file://`, though fetching pages and local AI servers work best over `http(s)`).
-2. Paste an article URL and press **Listen**, or tap a sample article.
+## How to use it
+
+1. Open Auralis (or tap **⬇ Download Auralis** above to install it).
+2. Paste an article URL or an X post link and press **Listen** — or tap a sample article, paste text, or upload a file.
 3. Press **▶** to hear it. Pick a voice, adjust speed, follow the highlighting.
 4. Tap **＋ Save to Library** to keep it for later.
 
 ### Tips
 
-- **Best voices:** Chrome and Edge on Windows/macOS expose the most natural voices (Microsoft Natural, Google US English). Safari on iOS/macOS has Samantha and friends. Voice availability varies by browser and OS — Auralis lists whatever your device offers, best first.
-- **A page won't load?** Some sites block cross-site reading. Auralis tries three routes, then tells you honestly. Copy the article text and use **Paste text**.
-- **Paywalls:** Auralis never bypasses a paywall. If you have legitimate access, paste the text yourself.
+- **Share a link straight into Auralis:** open `https://moretoexplore1234.github.io/auralis-reader/?url=<article-url>` and the article loads itself, ready to play. If your clipboard holds a link, Auralis offers to paste it with one tap.
+- **Best voices:** Chrome and Edge on Windows/macOS have the most natural voices (Microsoft Natural, Google US English). Safari on iOS/macOS has Samantha and friends. Auralis lists whatever your device offers, best first.
+- **A page won't load?** Some sites block cross-site reading. Auralis tries several routes, then tells you honestly. Copy the article text and use **Paste text**.
+- **Paywalls & protected posts:** Auralis never bypasses a paywall or a login wall. If you have access, paste the text yourself.
+- **Long listens:** Auralis reads the whole thing — a 2,000-word article or a full X thread — in sentences, keeping your place and the highlighting going all the way through.
 
 ## Add your own AI app
 
@@ -65,62 +70,44 @@ There is no backend, no database, no analytics, no tracking, and no code that ph
    - OpenAI: `https://api.openai.com/v1` · model `gpt-4o-mini`
    - Groq: `https://api.groq.com/openai/v1` · model `llama-3.3-70b-versatile`
    - OpenRouter: `https://openrouter.ai/api/v1` · model e.g. `openai/gpt-4o-mini`
-   - Ollama (local): `http://localhost:11434/v1` · model e.g. `llama3.2` — needs CORS enabled; serve Auralis over `http`, not `file://`
-   - LM Studio (local): `http://localhost:1234/v1` · model = whatever you loaded
+   - Ollama (on your computer): `http://localhost:11434/v1` · model e.g. `llama3.2`
+   - LM Studio (on your computer): `http://localhost:1234/v1` · model = whatever you loaded
 3. Tap **＋ Add AI app**, then **Test connection** on its card.
 4. Open an article, choose an action (Summarize / Explain / Ask / Translate), pick the app, tap **Run**.
 
 Import/export: **Export apps (JSON)** downloads your apps (including keys — keep the file safe); **Import apps (JSON)** restores them.
 
-## Set your Buy Me a Coffee name
+## Cost — $0
 
-Edit one line in `config.js`:
+| Thing | Cost |
+|---|---|
+| Hosting (GitHub Pages) | **$0** |
+| Built-in voices (your browser) | **$0** |
+| Article & X-post reading | **$0** |
+| Library & settings (your browser) | **$0** |
+| Premium voices (ElevenLabs / OpenAI / Azure / Google) — optional, your key | Pay your provider only |
+| AI apps — optional, your key | Pay your provider only |
 
-```js
-BUY_ME_A_COFFEE_USERNAME: "yourname",
-```
-
-Replace `"yourname"` with your real Buy Me a Coffee username. The header, footer and coffee-section buttons then link to `https://www.buymeacoffee.com/<your-username>`. While it still says `"yourname"`, the buttons show a gentle setup hint instead of linking anywhere.
-
-Other settings in `config.js`: default voice preferences, the sample-articles toggle, and the reader-proxy list.
-
-## Deploy for free (GitHub Pages)
-
-1. Create a public repo (e.g. `auralis-reader`) and push this folder to its `main` branch.
-2. The included workflow (`.github/workflows/pages.yml`) deploys automatically on every push to `main`. Or enable it manually: repo **Settings → Pages → Source: Deploy from a branch → `main` / `/ (root)`**.
-3. Your site goes live at `https://<your-github-username>.github.io/auralis-reader/`.
-4. Update the **Live demo** link at the top of this README with your real URL.
-
-No build step, no secrets, no environment variables.
+There is no backend, no database, no analytics, no tracking, and no code that phones home.
 
 ## Privacy
 
-- **API keys** (premium voices, AI apps) are stored **only** in the visitor's own browser `localStorage`. They are sent only to the provider the visitor chose, only when they press play, test, or Run.
-- **Articles and library** stay in the visitor's browser. Auralis has no server to send them to.
-- **No analytics, no cookies, no tracking.** The only third-party requests are the ones the visitor asks for: Google Fonts, the article they paste (via a public reader proxy if needed), and their chosen voice/AI provider.
-
-## Project structure
-
-```
-auralis-reader/
-├── index.html                  # Single-page app (structure)
-├── styles.css                  # Editorial design system (charcoal / ivory / gold)
-├── app.js                      # All logic: extraction, TTS, premium voices, AI hub, library
-├── config.js                   # One place for Buy Me a Coffee + defaults
-├── README.md                   # This file
-├── LICENSE                     # MIT
-├── .gitignore
-├── .nojekyll                   # GitHub Pages: serve files as-is
-└── .github/workflows/pages.yml # Auto-deploy to GitHub Pages
-```
+- **API keys** (premium voices, AI apps) are stored **only** in your own browser. They are sent only to the provider you chose, only when you press play, test, or Run.
+- **Articles and library** stay in your browser. Auralis has no server to send them to.
+- **No analytics, no cookies, no tracking.** The only outside requests are the ones you ask for: Google Fonts, the article you paste, and your chosen voice/AI provider.
 
 ## Known limits
 
-- Voice quality and availability vary by browser/OS; some browsers only offer a few voices.
+- Voice quality varies by browser and device; some browsers only offer a few voices.
 - Sites with strong bot protection or paywalls can't be read by URL — use Paste Text.
-- Local AI servers (Ollama/LM Studio) need CORS enabled and the page served over `http(s)`, not `file://`.
-- Word highlighting uses speech boundary events where the browser supports them, with a timing fallback otherwise — sync is close, not frame-perfect.
-- See `QA.md` for the test notes from the last check.
+- Local AI apps (Ollama / LM Studio) need to allow browser connections and the page served over `http(s)`, not `file://`.
+- Word highlighting follows the speech closely, with a timing fallback where the browser doesn't report word boundaries — sync is close, not frame-perfect.
+
+## Support Auralis
+
+Auralis is free, with no paywall, ever. If it saved you time today, a coffee is the kindest way to say thanks:
+
+**☕ https://www.buymeacoffee.com/carlmeiselman**
 
 ## License
 

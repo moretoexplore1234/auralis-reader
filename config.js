@@ -4,11 +4,9 @@
  * they live only in the visitor's own browser localStorage.
  */
 window.AURALIS_CONFIG = {
-  // Buy Me a Coffee username — replace "yourname" with your real username.
-  // The button links to https://www.buymeacoffee.com/<username>
-  // Leave as "yourname" and the button shows a gentle setup hint instead
-  // of linking to a stranger's page.
-  BUY_ME_A_COFFEE_USERNAME: "yourname",
+  // Buy Me a Coffee username. Buttons link to
+  // https://www.buymeacoffee.com/carlmeiselman
+  BUY_ME_A_COFFEE_USERNAME: "carlmeiselman",
 
   // Default voice preferences (applied when the browser has matching voices)
   DEFAULT_VOICE_PREFS: {

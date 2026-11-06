@@ -10,3 +10,4 @@ dist/
 *.local
 .local-keep/
 pages.yml.bak
+QA*.md

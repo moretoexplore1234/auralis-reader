@@ -9,6 +9,12 @@
 <meta property="og:description" content="Paste any public article link. Auralis reads it aloud in a realistic voice. Free forever.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#0F0E0C">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Auralis">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23C9A96A'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' font-family='Georgia,serif' fill='%230F0E0C'%3EA%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,11 +31,11 @@
       <span class="brand-tag">Read anything aloud</span></span>
     </a>
     <nav class="site-nav" aria-label="Main">
-      <a href="#reader">Reader</a>
+      <a href="#get-the-app">Get the app</a>
       <a href="#library">Library</a>
       <a href="#voices">Voices</a>
       <a href="#ai-apps">AI Apps</a>
-      <a class="btn btn-coffee btn-small" id="coffeeBtnHeader" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
+      <a class="btn btn-coffee btn-small" id="coffeeBtnHeader" href="https://www.buymeacoffee.com/carlmeiselman" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
     </nav>
   </div>
 </header>
@@ -47,16 +53,21 @@
       <form class="url-bar" id="urlForm" role="search" aria-label="Read a web page aloud">
         <label class="sr-only" for="urlInput">Article or web page URL</label>
         <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-               placeholder="Paste an article link — https://example.com/article…" required>
+               placeholder="Paste an article link — or an X post: x.com/…/status/…" required>
         <button class="btn btn-gold" type="submit" id="readUrlBtn">▶&nbsp; Listen</button>
       </form>
+      <p class="url-hint">Paste an X / Twitter link — long posts and threads read aloud, start to finish.</p>
+      <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
+        <a class="btn btn-gold btn-download" href="#get-the-app" id="downloadBtn">⬇ Download Auralis</a>
         <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
         <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
         <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
-        <button class="btn btn-ghost" type="button" id="surpriseBtn">✦ Surprise me</button>
+        <button class="btn btn-ghost" type="button" id="surpriseBtn">✦ Try a sample</button>
+        <button class="btn btn-ghost" type="button" id="moreBtn" aria-expanded="false">＋ More</button>
       </div>
+      <p class="hero-note">Three choices: listen to a link, paste text, or try a sample. Everything else — your Library, voices, AI apps and downloads — is one tap away under <strong>More</strong>.</p>
       <p class="hero-note">Works with public pages. <strong>Paywalled or blocked pages can't be read</strong> — we'll say so honestly and offer paste-text instead. No login, no tracking.</p>
 
       <div class="status" id="statusBox" aria-live="polite" hidden></div>
@@ -82,18 +93,33 @@
           <p class="reader-source" id="readerSource"></p>
           <h2 id="readerTitle">Untitled</h2>
           <p class="reader-byline" id="readerByline"></p>
+          <p class="clean-note" id="cleanNote" hidden></p>
         </div>
         <div class="progress-wrap" aria-label="Reading progress">
           <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
           <div class="progress-labels"><span id="progressText">0% read</span><span id="timeRemaining">— remaining</span></div>
         </div>
 
+        <div class="reader-mode-bar" id="readerModeBar" hidden>
+          <span class="reader-mode-label">Reader mode</span>
+          <button class="btn btn-ghost btn-small" type="button" id="fontDownBtn" aria-label="Smaller text">A−</button>
+          <button class="btn btn-ghost btn-small" type="button" id="fontUpBtn" aria-label="Larger text">A+</button>
+          <span class="theme-group" role="group" aria-label="Reading theme">
+            <button class="btn btn-ghost btn-small theme-btn" type="button" data-theme="light">Light</button>
+            <button class="btn btn-ghost btn-small theme-btn" type="button" data-theme="sepia">Sepia</button>
+            <button class="btn btn-ghost btn-small theme-btn" type="button" data-theme="dark">Dark</button>
+          </span>
+          <button class="btn btn-ghost btn-small" type="button" id="exitReaderModeBtn">✕ Exit Reader mode</button>
+        </div>
+
         <div class="player" role="group" aria-label="Playback controls">
           <div class="player-controls">
-            <button class="player-btn" id="prevSentenceBtn" type="button" title="Previous sentence" aria-label="Previous sentence">⏮</button>
-            <button class="player-btn primary" id="playPauseBtn" type="button" title="Play or pause" aria-label="Play or pause">▶</button>
-            <button class="player-btn" id="stopBtn" type="button" title="Stop" aria-label="Stop">■</button>
-            <button class="player-btn" id="nextSentenceBtn" type="button" title="Next sentence" aria-label="Next sentence">⏭</button>
+            <button class="player-btn labelled" id="prevSentenceBtn" type="button" title="Previous sentence" aria-label="Previous sentence">⏮ Previous</button>
+            <button class="player-btn labelled primary" id="playPauseBtn" type="button" title="Play or pause" aria-label="Play or pause">▶ Listen</button>
+            <button class="player-btn labelled" id="stopBtn" type="button" title="Stop" aria-label="Stop">■ Stop</button>
+            <button class="player-btn labelled" id="nextSentenceBtn" type="button" title="Next sentence" aria-label="Next sentence">Next ⏭</button>
+            <button class="player-btn labelled" id="skipBackBtn" type="button" title="Skip back 15 seconds" aria-label="Skip back 15 seconds">⏪ 15s</button>
+            <button class="player-btn labelled" id="skipFwdBtn" type="button" title="Skip forward 15 seconds" aria-label="Skip forward 15 seconds">15s ⏩</button>
           </div>
           <div class="voice-controls">
             <label>Voice
@@ -102,23 +128,57 @@
             <label>Speed <span class="speed-readout" id="speedReadout">1.0×</span>
               <input type="range" id="rateRange" min="0.5" max="1.5" step="0.05" value="1" aria-label="Reading speed">
             </label>
+            <label>Speed preset
+              <select id="speedPreset" aria-label="Reading speed preset">
+                <option value="0.8">Slow &amp; clear</option>
+                <option value="1" selected>Normal</option>
+                <option value="1.25">Fast</option>
+              </select>
+            </label>
             <label>Pitch
               <input type="range" id="pitchRange" min="0.5" max="1.5" step="0.1" value="1" aria-label="Voice pitch">
             </label>
+            <label>Sleep timer
+              <select id="sleepTimer" aria-label="Sleep timer">
+                <option value="0" selected>Off</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">60 min</option>
+              </select>
+            </label>
+            <label class="check-inline"><input type="checkbox" id="followToggle" checked> Follow along</label>
           </div>
           <div class="reader-actions">
-            <button class="btn btn-dark btn-small" type="button" id="saveToLibraryBtn">＋ Save to Library</button>
+            <button class="btn btn-dark btn-small" type="button" id="saveToLibraryBtn">🔖 Save</button>
+            <button class="btn btn-dark btn-small" type="button" id="summarizeBtn">✦ Summarize this</button>
+            <button class="btn btn-dark btn-small" type="button" id="readerModeBtn">📖 Reader mode</button>
             <button class="btn btn-dark btn-small" type="button" id="copyTextBtn">⧉ Copy text</button>
           </div>
         </div>
 
         <article class="article-body" id="articleBody" tabindex="0" aria-label="Article text"></article>
+
+        <div class="bottom-player" id="bottomPlayer" role="group" aria-label="Player — always reachable">
+          <button class="player-btn labelled primary" id="playPauseBtnBottom" type="button" aria-label="Play or pause">▶ Listen</button>
+          <button class="player-btn labelled" id="prevBtnBottom" type="button" aria-label="Previous sentence">⏮ Previous</button>
+          <button class="player-btn labelled" id="nextBtnBottom" type="button" aria-label="Next sentence">Next ⏭</button>
+          <label class="bottom-speed">Speed
+            <select id="speedPresetBottom" aria-label="Reading speed preset">
+              <option value="0.8">Slow &amp; clear</option>
+              <option value="1" selected>Normal</option>
+              <option value="1.25">Fast</option>
+            </select>
+          </label>
+          <span class="bottom-voice" id="bottomVoiceName">Voice: —</span>
+          <label class="check-inline"><input type="checkbox" id="followToggleBottom" checked> Follow</label>
+        </div>
+        <button class="follow-fab" type="button" id="followBtn" hidden>▶ Follow along</button>
       </div>
     </div>
   </section>
 
   <!-- HOW IT WORKS + COST -->
-  <section class="panel" id="how">
+  <section class="panel more-section" id="how">
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">How it works</p>
@@ -133,7 +193,7 @@
     </div>
   </section>
 
-  <section class="panel" aria-label="Cost">
+  <section class="panel more-section" aria-label="Cost">
     <div class="wrap">
       <div class="card">
         <h3>What it costs to run</h3>
@@ -152,8 +212,51 @@
     </div>
   </section>
 
+  <!-- GET THE APP -->
+  <section class="panel more-section" id="get-the-app" aria-label="Get the app">
+    <div class="wrap">
+      <div class="panel-head">
+        <p class="eyebrow">Get the app</p>
+        <h2>Download Auralis — free, in under a minute</h2>
+        <p>GitHub is the app store for Auralis — every version lives under <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">Releases</a>. Pick whichever way suits you:</p>
+      </div>
+      <div class="download-grid">
+        <div class="card download-card">
+          <span class="pill free">Easiest · No download</span>
+          <h3 style="margin-top:10px">Use it now</h3>
+          <p>Nothing to install. Open Auralis in your browser and paste a link — it works on phone, tablet and computer.</p>
+          <a class="btn btn-gold btn-block" href="https://moretoexplore1234.github.io/auralis-reader/" target="_blank" rel="noopener">▶ Open Auralis now</a>
+        </div>
+        <div class="card download-card">
+          <span class="pill free">Install as an app</span>
+          <h3 style="margin-top:10px">Add to your home screen</h3>
+          <p>Auralis installs like an app — icon on your home screen, opens full-screen, works offline for saved articles.</p>
+          <ol class="mini-steps">
+            <li>Open <strong>this page</strong> in Chrome or Edge on your phone or computer.</li>
+            <li>Tap the <strong>⋮ menu</strong> (or the install icon in the address bar).</li>
+            <li>Tap <strong>“Install app”</strong> or <strong>“Add to Home screen.”</strong></li>
+          </ol>
+          <button class="btn btn-gold btn-block" type="button" id="installAppBtn">⬇ Install as an app</button>
+          <p class="muted" id="installAppHint" style="margin-top:10px">If the button says the app is already installed, you're all set — look for the gold A on your home screen.</p>
+        </div>
+        <div class="card download-card">
+          <span class="pill free">Keep the files</span>
+          <h3 style="margin-top:10px">Download the files</h3>
+          <p>Want your own copy? Download the whole app from GitHub — free, no account needed.</p>
+          <ol class="mini-steps">
+            <li>Tap <strong>“Download the files (ZIP)”</strong> below.</li>
+            <li>Unzip the folder it downloads.</li>
+            <li>Double-click <strong>index.html</strong> — Auralis opens in your browser.</li>
+          </ol>
+          <a class="btn btn-gold btn-block" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/heads/main.zip" rel="noopener">⬇ Download the files (ZIP)</a>
+          <p class="muted" style="margin-top:10px">Every version, with notes: <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">GitHub Releases</a> · Source code: <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">github.com/moretoexplore1234/auralis-reader</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- LIBRARY -->
-  <section class="panel" id="library">
+  <section class="panel more-section" id="library">
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">Your library</p>
@@ -166,12 +269,13 @@
   </section>
 
   <!-- VOICES -->
-  <section class="panel" id="voices">
+  <section class="panel more-section" id="voices">
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">Voices</p>
         <h2>Free voices now. Studio voices if you want them.</h2>
         <p>The free voices built into your browser and operating system already sound remarkably human — and they cost nothing. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
+        <label class="check-inline human-toggle"><input type="checkbox" id="humanOnlyToggle" checked> Human-sounding voices only <span class="muted">(hides robotic voices)</span></label>
       </div>
       <div class="grid-2">
         <div class="card">
@@ -185,11 +289,12 @@
           <h3 style="margin-top:10px">Premium voice provider</h3>
           <p>Choose a provider, paste your key, test it. Auralis uses it only for narration you start.</p>
           <div class="provider-grid" role="group" aria-label="Premium voice provider">
-            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Browser voice</strong><span>Free · default</span></button>
-            <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most realistic · your key</span></button>
-            <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Alloy, Nova &amp; more · your key</span></button>
-            <button type="button" class="provider-card" data-provider="azure" aria-pressed="false"><strong>Azure Speech</strong><span>Neural voices · your key</span></button>
-            <button type="button" class="provider-card" data-provider="google" aria-pressed="false"><strong>Google Cloud TTS</strong><span>WaveNet / Neural2 · your key</span></button>
+            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Browser voice</strong><span>Free · default · natural voices first</span></button>
+            <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most lifelike · uses your ElevenLabs credits</span></button>
+            <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Smooth studio voices · your key</span></button>
+            <button type="button" class="provider-card" data-provider="azure" aria-pressed="false"><strong>Azure Speech</strong><span>Natural newsreader voices · your key</span></button>
+            <button type="button" class="provider-card" data-provider="google" aria-pressed="false"><strong>Google Cloud TTS</strong><span>Neural2 / WaveNet voices · your key</span></button>
+            <button type="button" class="provider-card" data-provider="generic-tts" aria-pressed="false"><strong>My own TTS server</strong><span>Any OpenAI-compatible endpoint · your server</span></button>
           </div>
           <div id="providerForm" style="margin-top:16px"></div>
         </div>
@@ -198,7 +303,7 @@
   </section>
 
   <!-- AI APPS HUB -->
-  <section class="panel" id="ai-apps">
+  <section class="panel more-section" id="ai-apps">
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">Personal AI apps</p>
@@ -247,14 +352,14 @@
   </section>
 
   <!-- COFFEE -->
-  <section class="coffee">
+  <section class="coffee more-section">
     <div class="wrap">
       <div class="coffee-card">
         <p class="eyebrow" style="text-align:center">Keep it free</p>
         <h2>Auralis is free — coffee keeps it free.</h2>
         <p>No paywall, no account, no ads. If Auralis saved you time today, a coffee is the kindest way to say thanks — it pays for nothing but the love that keeps this little reader alive.</p>
-        <a class="btn btn-coffee" id="coffeeBtnFooter" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener" style="font-size:1.05rem;padding:14px 26px">☕ Buy Me a Coffee</a>
-        <p class="muted" id="coffeeNote" style="margin:16px 0 0;font-size:.85rem;color:var(--muted)">Set your Buy Me a Coffee username in <code>config.js</code> to point this button at your page.</p>
+        <a class="btn btn-coffee" id="coffeeBtnFooter" href="https://www.buymeacoffee.com/carlmeiselman" target="_blank" rel="noopener" style="font-size:1.05rem;padding:14px 26px">☕ Buy Me a Coffee</a>
+        <p class="muted" id="coffeeNote" style="margin:16px 0 0;font-size:.85rem;color:var(--muted)">Auralis is free — coffee keeps it free, no paywall. Thank you for supporting it.</p>
       </div>
     </div>
   </section>
@@ -268,8 +373,8 @@
       <a href="#how">How it works</a>
       <a href="#library">Library</a>
       <a href="#ai-apps">AI Apps</a>
-      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
-      <a id="coffeeLinkFooter" href="https://www.buymeacoffee.com/yourname" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
+      <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">GitHub</a>
+      <a id="coffeeLinkFooter" href="https://www.buymeacoffee.com/carlmeiselman" target="_blank" rel="noopener">☕ Buy Me a Coffee</a>
     </nav>
   </div>
 </footer>
