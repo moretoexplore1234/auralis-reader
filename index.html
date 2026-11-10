@@ -94,6 +94,11 @@
           <h2 id="readerTitle">Untitled</h2>
           <p class="reader-byline" id="readerByline"></p>
           <p class="clean-note" id="cleanNote" hidden></p>
+          <div class="radar-sweep" id="radarSweep" hidden><div class="radar-bar"></div><span>Content Radar sweeping…</span></div>
+          <div class="removed-box" id="radarRemovedBox" hidden>
+            <button class="btn btn-ghost btn-small" type="button" id="radarRemovedToggle">Show removed</button>
+            <div class="removed-list" id="radarRemovedList" hidden></div>
+          </div>
         </div>
         <div class="progress-wrap" aria-label="Reading progress">
           <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
@@ -115,7 +120,7 @@
         <div class="player" role="group" aria-label="Playback controls">
           <div class="player-controls">
             <button class="player-btn labelled" id="prevSentenceBtn" type="button" title="Previous sentence" aria-label="Previous sentence">⏮ Previous</button>
-            <button class="player-btn labelled primary" id="playPauseBtn" type="button" title="Play or pause" aria-label="Play or pause">▶ Listen</button>
+            <button class="player-btn labelled primary" id="playPauseBtn" type="button" title="Play or pause" aria-label="Play or pause">▶ Play</button>
             <button class="player-btn labelled" id="stopBtn" type="button" title="Stop" aria-label="Stop">■ Stop</button>
             <button class="player-btn labelled" id="nextSentenceBtn" type="button" title="Next sentence" aria-label="Next sentence">Next ⏭</button>
             <button class="player-btn labelled" id="skipBackBtn" type="button" title="Skip back 15 seconds" aria-label="Skip back 15 seconds">⏪ 15s</button>
@@ -159,7 +164,7 @@
         <article class="article-body" id="articleBody" tabindex="0" aria-label="Article text"></article>
 
         <div class="bottom-player" id="bottomPlayer" role="group" aria-label="Player — always reachable">
-          <button class="player-btn labelled primary" id="playPauseBtnBottom" type="button" aria-label="Play or pause">▶ Listen</button>
+          <button class="player-btn labelled primary" id="playPauseBtnBottom" type="button" aria-label="Play or pause">▶ Play</button>
           <button class="player-btn labelled" id="prevBtnBottom" type="button" aria-label="Previous sentence">⏮ Previous</button>
           <button class="player-btn labelled" id="nextBtnBottom" type="button" aria-label="Next sentence">Next ⏭</button>
           <label class="bottom-speed">Speed
@@ -187,7 +192,7 @@
       </div>
       <div class="steps">
         <div class="step"><div class="step-num">01</div><h3>Paste a link</h3><p>Any public article or page. Auralis extracts the real article text and strips the nav, ads and clutter.</p></div>
-        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Your device's built-in voices are free and ready now. Add an ElevenLabs or OpenAI key later if you want a studio voice.</p></div>
+        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Microsoft AI voices (Aria, Jenny, Guy…) are free, built in and already the default — no key, no credits. Add an ElevenLabs or Cartesia key later if you want a studio voice.</p></div>
         <div class="step"><div class="step-num">03</div><h3>Listen &amp; ask</h3><p>Follow along with word highlighting, save it to your Library, or ask one of your AI apps to summarise it.</p></div>
       </div>
     </div>
@@ -205,7 +210,10 @@
             <tr><td>Built-in voices (Web Speech API)</td><td>Your browser / OS</td><td>$0</td></tr>
             <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
             <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
-            <tr><td>ElevenLabs / OpenAI / Azure / Google voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
+            <tr><td>Microsoft AI voices (Edge Read Aloud)</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
+            <tr><td>Google free voice</td><td>Google</td><td>$0 · unlimited, no key</td></tr>
+            <tr><td>ElevenLabs (10k chars/mo) / Cartesia (20k credits/mo)</td><td>Optional, your free key</td><td>$0 on the free tier</td></tr>
+            <tr><td>OpenAI / Azure / Google Cloud voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
           </tbody>
         </table>
       </div>
@@ -273,15 +281,21 @@
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">Voices</p>
-        <h2>Free voices now. Studio voices if you want them.</h2>
-        <p>The free voices built into your browser and operating system already sound remarkably human — and they cost nothing. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
+        <h2>Free AI voices now. Studio voices if you want them.</h2>
+        <p>Microsoft AI voices are free, unlimited and already the default — no key, no credits, no account. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
+        <div class="tier-grid" aria-label="Voice tiers">
+          <div class="tier-card tier-free"><strong>Unlimited &amp; free</strong><span>Microsoft AI voices (Edge Read Aloud) — no key, no credits. The default.</span></div>
+          <div class="tier-card"><strong>Free monthly credits</strong><span>ElevenLabs 10k/mo · Cartesia 20k/mo — your free key.</span></div>
+          <div class="tier-card"><strong>Your key, pay your provider</strong><span>OpenAI · Azure · Google Cloud.</span></div>
+        </div>
+        <p class="muted" style="margin-top:10px">Watching: Block's Dessa (not publicly available yet — on the waitlist).</p>
         <label class="check-inline human-toggle"><input type="checkbox" id="humanOnlyToggle" checked> Human-sounding voices only <span class="muted">(hides robotic voices)</span></label>
       </div>
       <div class="grid-2">
         <div class="card">
           <span class="pill free">Free · Built in</span>
-          <h3 style="margin-top:10px">Browser voices</h3>
-          <p>Tap any voice to hear a preview. Premium / natural voices are listed first when your device has them.</p>
+          <h3 style="margin-top:10px">AI &amp; browser voices</h3>
+          <p>Microsoft AI voices are free, unlimited and already the default. Tap any voice to hear a preview — or pick a browser voice from your device below.</p>
           <div class="voice-list" id="voiceList"><p class="muted">Loading voices… If this stays empty, your browser may not expose speech voices — try Chrome, Edge or Safari.</p></div>
         </div>
         <div class="card">
@@ -291,6 +305,7 @@
           <div class="provider-grid" role="group" aria-label="Premium voice provider">
             <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Browser voice</strong><span>Free · default · natural voices first</span></button>
             <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most lifelike · uses your ElevenLabs credits</span></button>
+            <button type="button" class="provider-card" data-provider="cartesia" aria-pressed="false"><strong>Cartesia Sonic</strong><span>Closest rival to ElevenLabs · free 20k credits/mo</span></button>
             <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Smooth studio voices · your key</span></button>
             <button type="button" class="provider-card" data-provider="azure" aria-pressed="false"><strong>Azure Speech</strong><span>Natural newsreader voices · your key</span></button>
             <button type="button" class="provider-card" data-provider="google" aria-pressed="false"><strong>Google Cloud TTS</strong><span>Neural2 / WaveNet voices · your key</span></button>
@@ -298,6 +313,25 @@
           </div>
           <div id="providerForm" style="margin-top:16px"></div>
         </div>
+      </div>
+      <div class="card clone-studio" id="cloneStudio" style="margin-top:16px">
+        <span class="pill byo">Optional · Bring your own key</span>
+        <h3 style="margin-top:10px">Clone Studio</h3>
+        <p>Clone a voice <strong>you own or have permission to use</strong> — your own voice, or a voice you made. Upload 30 seconds to 1 minute of clean sample audio and Auralis creates the clone through ElevenLabs Instant Voice Clone or Cartesia, using your own key. The clone is then listed as a voice you can use.</p>
+        <p class="muted">Only clone voices you own or have permission to use. Never download, rip or clone another company's demo audio.</p>
+        <p class="muted">Local cloning is unlimited but very slow — our own local clone runs 15–25× slower than realtime, so a full article would take hours. The Microsoft voices above are the fast unlimited option.</p>
+        <div class="field-row">
+          <div class="field"><label for="cloneProvider">Clone with</label>
+            <select id="cloneProvider"><option value="elevenlabs">ElevenLabs (free tier works)</option><option value="cartesia">Cartesia (paid plan needed for cloning)</option></select>
+          </div>
+          <div class="field"><label for="cloneKey">Your API key <span style="font-weight:400;color:var(--muted)">(stored locally only)</span></label><input id="cloneKey" type="password" autocomplete="off" placeholder="Paste your key"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label for="cloneName">Clone name</label><input id="cloneName" placeholder="e.g. My Reading Voice" maxlength="60"></div>
+          <div class="field"><label for="cloneFile">Sample audio (30 sec – 1 min, clean)</label><input id="cloneFile" type="file" accept="audio/*"></div>
+        </div>
+        <button class="btn btn-gold" type="button" id="cloneBtn">＋ Clone this voice</button>
+        <p class="muted" id="cloneStatus" style="margin-top:10px" aria-live="polite"></p>
       </div>
     </div>
   </section>
@@ -345,6 +379,13 @@
           <button class="btn btn-gold btn-block" type="button" id="runAiBtn">Run on this article</button>
           <p class="muted" style="margin-top:10px">No article open yet? <a href="#top" id="aiNoArticleLink">Paste a link or open a sample first.</a></p>
         </div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <h3>Content Radar — optional Hugging Face double-check</h3>
+        <p>The Content Radar already works fully with no key: it scores every paragraph and keeps only the core text. If you want, it can double-check the borderline paragraphs with Hugging Face.</p>
+        <label class="check-inline"><input type="checkbox" id="hfToggle"> Use Hugging Face to double-check</label>
+        <div class="field" style="margin-top:10px"><label for="hfToken">Hugging Face token <span style="font-weight:400;color:var(--muted)">(free — huggingface.co/settings/tokens, stored locally only)</span></label><input id="hfToken" type="password" autocomplete="off" placeholder="hf_…"></div>
+        <p class="muted" id="hfStatus">Hugging Face is optional — the radar already works without it.</p>
       </div>
       <div class="app-grid" id="appGrid"></div>
       <div class="ai-output" id="aiOutput" aria-live="polite" hidden></div>

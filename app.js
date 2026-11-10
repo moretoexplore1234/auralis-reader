@@ -135,9 +135,18 @@
     currentSentence: -1,
     playing: false,
     paused: false,
-    engine: "browser",     // "browser" | "premium"
+    engine: "browser",     // "browser" | "free" | "premium"
     premiumAudio: null,
     premiumTimer: null,
+    freeAudio: null,       // Audio element (or Google chain facade) for the free AI engine
+    freeTimer: null,
+    freeTransport: null,   // "edge" | "google" — decided on first play, per session
+    edgeFailed: false,
+    googleFailed: false,
+    removedParagraphs: [], // paragraphs the Content Radar cut (restorable)
+    radarKeptIndices: [],  // original paragraph index of each kept paragraph
+    radarKept: 0,
+    radarRemoved: 0,
     wordTimer: null,
     charOffsetBase: 0
   };
@@ -146,7 +155,8 @@
     library: "auralis.library.v1",
     apps: "auralis.aiapps.v1",
     voice: "auralis.voice.v1",
-    premium: "auralis.premium.v1"
+    premium: "auralis.premium.v1",
+    hf: "auralis.hf.v1"
   };
 
   /* ---------------- Buy Me a Coffee ---------------- */
@@ -218,13 +228,7 @@
     $("readerTitle").textContent = state.title;
     $("readerSource").textContent = state.source || "";
     $("readerByline").textContent = state.byline || (state.totalWords + " words · " + minutesText(state.totalWords, currentRate()) + " listen");
-    var note = $("cleanNote");
-    if (note) {
-      if (state.clutterRemoved > 0) {
-        note.hidden = false;
-        note.textContent = "Cleaned up — removed " + state.clutterRemoved + " clutter block" + (state.clutterRemoved === 1 ? "" : "s") + " (ads, menus, related links, comments).";
-      } else note.hidden = true;
-    }
+    renderRadarResult();
     var body = $("articleBody");
     body.innerHTML = "";
     if (!state.paragraphs.length) {
@@ -325,7 +329,7 @@
     $("timeRemaining").textContent = remaining <= 0 ? "Finished" : minutesText(remaining, currentRate()) + " remaining";
   }
 
-  function openArticle(title, source, byline, bodyText, clutterRemoved) {
+  function openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt) {
     if (!bodyText || wordsOf(bodyText) < 20) {
       showStatus("error", "Not enough text to read",
         "That page didn't give us enough readable text (under 20 words). Try <strong>Paste text</strong> instead — you can copy the article text into Auralis directly.",
@@ -334,8 +338,60 @@
     }
     hideStatus();
     state.clutterRemoved = clutterRemoved || 0;
-    buildModel(title, source, byline, bodyText);
-    toast("Ready — press play to listen.");
+    // Content Radar: score every paragraph and keep only the core.
+    var paras = String(bodyText || "").split(/\n\s*\n/).map(function (p) { return p.trim(); }).filter(Boolean);
+    var isX = /^X · @/.test(source || "");
+    var radar = radarFilter(paras, isX);
+    state.removedParagraphs = radar.removed;
+    state.radarKeptIndices = radar.kept.map(function (p) { return p.index; });
+    state.radarKept = radar.kept.length;
+    state.radarRemoved = radar.removed.length;
+    state.clutterRemoved = (clutterRemoved || 0) + radar.removed.length;
+    var keptText = radar.kept.map(function (p) { return p.text; }).join("\n\n");
+    // Brief radar sweep animation, then build. The Hugging Face
+    // double-check (if the visitor enabled it) runs first, with a hard
+    // cap so a slow HF call can never stall the reader.
+    var sweep = $("radarSweep");
+    if (sweep) { sweep.hidden = false; sweep.classList.add("sweeping"); }
+    var radarDone = false;
+    function finishRadar() {
+      if (radarDone) return;
+      radarDone = true;
+      if (sweep) { sweep.hidden = true; sweep.classList.remove("sweeping"); }
+      buildModel(title, source, byline, keptText);
+      renderRadarResult();
+      if (typeof resumeAt === "number" && state.sentences.length) {
+        var target = clamp(resumeAt, 0, state.sentences.length - 1);
+        state.currentSentence = target;
+        highlightSentence(target);
+        updateProgress();
+      }
+      saveProgressToLibrary(true);
+      toast("Ready — press play to listen.");
+    }
+    if (hfEnabled() && radar.borderline.length) {
+      var hfTimer = setTimeout(finishRadar, 8000);
+      hfDoubleCheck(radar.borderline).then(function (adjust) {
+        clearTimeout(hfTimer);
+        if (adjust) {
+          // HF verdicts adjusted the borderline scores in place; re-partition
+          // by score (do NOT re-score — that would discard the verdicts).
+          var all = radar.kept.concat(radar.removed).sort(function (a, b) { return a.index - b.index; });
+          var kept = all.filter(function (p) { return p.score >= RADAR_KEEP; });
+          var removed = all.filter(function (p) { return p.score < RADAR_KEEP; });
+          radar = { kept: kept, removed: removed, borderline: [] };
+          state.removedParagraphs = removed;
+          state.radarKeptIndices = kept.map(function (p) { return p.index; });
+          state.radarKept = kept.length;
+          state.radarRemoved = removed.length;
+          state.clutterRemoved = (clutterRemoved || 0) + removed.length;
+          keptText = kept.map(function (p) { return p.text; }).join("\n\n");
+        }
+        finishRadar();
+      }).catch(function () { clearTimeout(hfTimer); finishRadar(); });
+    } else {
+      setTimeout(finishRadar, 450);
+    }
   }
 
   /* ---------------- article extraction (allowed pages only) ---------------- */
@@ -405,18 +461,151 @@
     }
     var bestText = "";
     var bestParaCount = 0;
+    var bestRadarRemoved = 0;
     candidates.forEach(function (n) {
-      var paras = Array.prototype.slice.call(n.querySelectorAll("p, h2, h3, blockquote, li"))
-        .map(function (p) { return (p.textContent || "").replace(/\s+/g, " ").trim(); })
-        .filter(function (t) { return t.length > 40 && !isClutterParagraph(t); });
-      var text = paras.join("\n\n");
-      if (text.length > bestText.length) { bestText = text; bestParaCount = paras.length; }
+      var objs = Array.prototype.slice.call(n.querySelectorAll("p, h2, h3, blockquote, li"))
+        .map(function (p) {
+          var t = (p.textContent || "").replace(/\s+/g, " ").trim();
+          var linkText = Array.prototype.slice.call(p.querySelectorAll("a"))
+            .map(function (a) { return (a.textContent || "").length; })
+            .reduce(function (a, b) { return a + b; }, 0);
+          return { text: t, linkDensity: t.length ? linkText / t.length : 0 };
+        })
+        .filter(function (o) { return o.text.length > 40 && !isClutterParagraph(o.text); });
+      // Radar at the DOM stage: link density + position are visible here.
+      var r = radarFilterObjs(objs, false);
+      var text = r.kept.map(function (o) { return o.text; }).join("\n\n");
+      if (text.length > bestText.length) { bestText = text; bestParaCount = r.kept.length; bestRadarRemoved = r.removed.length; }
     });
     if (!bestText) {
       var bodyText = (doc.body ? doc.body.textContent : "").replace(/\s+/g, " ").trim();
       if (bodyText.length > 400) bestText = bodyText;
     }
-    return { title: title, author: author, text: bestText, clutterRemoved: clutterRemoved, paragraphs: bestParaCount };
+    return { title: title, author: author, text: bestText, clutterRemoved: clutterRemoved + bestRadarRemoved, paragraphs: bestParaCount };
+  }
+
+  /* ---------------- Content Radar ----------------
+   * Sweeps every loaded page/text like a radar and keeps ONLY the core
+   * paragraphs that should be read aloud. Scores every block on length
+   * (real sentences, not fragments), link density (low = real content),
+   * and boilerplate signals (nav, ads, "read more", newsletter, cookie,
+   * comments, share, subscribe, related). Anything below the bar is cut
+   * — but never lost: the reader can show what was removed and restore
+   * any paragraph with one tap. The radar works fully with no key and
+   * no account; the Hugging Face double-check below is strictly optional.
+   */
+  var RADAR_BOILERPLATE = /^(show this thread|show replies|promoted|advertisement|sponsored|read more|read next|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|photo: |caption: )/i;
+  var RADAR_KEEP = 25; // score >= 25 is core content
+  function scoreParagraph(p, isX) {
+    var text = p.text || "";
+    var sentences = splitSentences(text).length;
+    var words = wordsOf(text);
+    var score = 0;
+    if (words >= 25) score += 30; else if (words >= 12) score += 18; else if (words >= 6) score += 6;
+    if (sentences >= 2) score += 20; else if (sentences === 1) score += 8;
+    if (/[.!?]["'\u201d)]?\s*$/.test(text)) score += 10; // ends like a real sentence
+    if (RADAR_BOILERPLATE.test(text)) score -= 60;
+    if (CLUTTER_PARA_RE.test(text)) score -= 60;
+    if (isX && /^(show this thread|promoted)\b/i.test(text)) score -= 60;
+    if ((p.linkDensity || 0) > 0.5) score -= 35; else if ((p.linkDensity || 0) > 0.3) score -= 15;
+    // X posts are short by nature — don't punish brevity.
+    if (isX && words >= 4) score += 10;
+    return score;
+  }
+  function radarFilter(paras, isX) {
+    return radarFilterObjs(paras.map(function (t, i) { return { text: t, linkDensity: 0, index: i }; }), isX);
+  }
+  function radarFilterObjs(objs, isX) {
+    var kept = [], removed = [], borderline = [];
+    objs.forEach(function (o, i) {
+      o.index = (typeof o.index === "number") ? o.index : i;
+      o.score = scoreParagraph(o, isX);
+      if (o.score >= RADAR_KEEP) kept.push(o);
+      else removed.push(o);
+      if (Math.abs(o.score - RADAR_KEEP) <= 12) borderline.push(o);
+    });
+    return { kept: kept, removed: removed, borderline: borderline };
+  }
+  function renderRadarResult() {
+    var note = $("cleanNote");
+    if (note) {
+      if (state.radarKept > 0) {
+        note.hidden = false;
+        note.textContent = "Radar found " + state.radarKept + " core paragraph" + (state.radarKept === 1 ? "" : "s") +
+          (state.clutterRemoved > 0 ? " · removed " + state.clutterRemoved + " clutter block" + (state.clutterRemoved === 1 ? "" : "s") : " · nothing removed");
+      } else note.hidden = true;
+    }
+    var box = $("radarRemovedBox");
+    if (box) {
+      var hasRemoved = state.removedParagraphs.length > 0;
+      box.hidden = !hasRemoved;
+      var toggle = $("radarRemovedToggle");
+      if (toggle) toggle.textContent = hasRemoved ? "Show removed (" + state.removedParagraphs.length + ")" : "Show removed";
+      var list = $("radarRemovedList");
+      if (list && !list.hidden) renderRemovedList();
+    }
+  }
+  function renderRemovedList() {
+    var list = $("radarRemovedList"); if (!list) return;
+    list.innerHTML = "";
+    state.removedParagraphs.forEach(function (p, i) {
+      var row = el("div", "removed-row");
+      var preview = p.text.length > 140 ? p.text.slice(0, 140) + "…" : p.text;
+      row.appendChild(el("span", "removed-text", preview));
+      var restore = el("button", "btn btn-ghost btn-small", "Restore");
+      restore.type = "button";
+      restore.addEventListener("click", function () { restoreParagraph(i); });
+      row.appendChild(restore);
+      list.appendChild(row);
+    });
+    if (!state.removedParagraphs.length) list.appendChild(el("p", "muted", "Nothing removed — the radar kept everything."));
+  }
+  function restoreParagraph(i) {
+    var p = state.removedParagraphs[i];
+    if (!p) return;
+    state.removedParagraphs.splice(i, 1);
+    state.radarRemoved = Math.max(0, state.radarRemoved - 1);
+    state.clutterRemoved = Math.max(0, state.clutterRemoved - 1);
+    state.radarKept += 1;
+    // Re-insert at its original position among the kept paragraphs.
+    var keptIdx = state.radarKeptIndices.length ? state.radarKeptIndices : state.paragraphs.map(function (_, j) { return j; });
+    var all = state.paragraphs.map(function (t, j) { return { text: t, index: keptIdx[j] != null ? keptIdx[j] : j }; });
+    all.push({ text: p.text, index: p.index });
+    all.sort(function (a, b) { return a.index - b.index; });
+    state.radarKeptIndices = all.map(function (o) { return o.index; });
+    buildModel(state.title, state.source, state.byline, all.map(function (o) { return o.text; }).join("\n\n"));
+    renderRadarResult();
+    toast("Paragraph restored — it will be read aloud.");
+  }
+
+  /* Optional Hugging Face double-check for borderline paragraphs.
+   * Strictly optional and off by default: the radar works fully without
+   * it. When the visitor enables it and pastes a free HF token (stored
+   * only in localStorage), borderline paragraphs are checked with a
+   * zero-shot classifier; a failure anywhere falls back to the local
+   * radar, silently. Never a required path, never a shipped token. */
+  function hfCfg() { return storeGet(LS.hf, { enabled: false, token: "" }) || { enabled: false, token: "" }; }
+  function hfEnabled() { var c = hfCfg(); return !!c.enabled && !!(c.token || "").trim(); }
+  function hfDoubleCheck(borderline) {
+    var token = hfCfg().token.trim();
+    var calls = borderline.slice(0, 8).map(function (p) {
+      return fetch("https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inputs: p.text.slice(0, 1000),
+          parameters: { candidate_labels: ["main article content", "advertisement, navigation, or boilerplate"] }
+        })
+      }).then(function (r) { if (!r.ok) throw new Error("HF HTTP " + r.status); return r.json(); })
+        .then(function (j) {
+          var labels = j.labels || [], scores = j.scores || [];
+          var b = labels.indexOf("advertisement, navigation, or boilerplate");
+          var m = labels.indexOf("main article content");
+          if (b >= 0 && scores[b] > 0.75) p.score = RADAR_KEEP - 1; // demote to removed
+          else if (m === 0 && scores[0] > 0.75) p.score = RADAR_KEEP; // promote to kept
+        }).catch(function () { /* HF failed for this paragraph — local radar stands */ });
+    });
+    return Promise.all(calls).then(function () { return true; });
   }
 
   /* ---------------- X / Twitter posts (long posts & threads) ---------------- */
@@ -540,7 +729,6 @@
           " · X post · via " + post.via + " · " + post.parts.length + (post.parts.length > 1 ? " parts" : " post") +
           " · Original: " + url;
         openArticle(title, "X · @" + handle, byline, body);
-        saveProgressToLibrary(true);
       }).catch(function () {
         // Fall through to the generic article fetch (Jina / AllOrigins can
         // sometimes still read a public post page). If that fails too, the
@@ -583,7 +771,6 @@
       setBusy(btn, false, "▶  Listen");
       var byline = extracted.author ? "By " + extracted.author + " · " + parsed.hostname : parsed.hostname + " · via " + res.via;
       openArticle(extracted.title, parsed.hostname, byline, extracted.text, extracted.clutterRemoved || 0);
-      saveProgressToLibrary(true);
     }).catch(function (err) {
       setBusy(btn, false, "▶  Listen");
       if (parseXUrl(url)) {
@@ -760,40 +947,90 @@
   function onlyRoboticVoices() {
     return voices.length > 0 && voices.every(isRoboticVoice);
   }
+  // The visitor's voice choice: which engine, and which voice in it.
+  // Default = Microsoft Aria (Edge Read Aloud), free, no key — unless
+  // the visitor picked otherwise.
+  function currentVoiceChoice() {
+    var saved = storeGet(LS.voice, {}) || {};
+    var v = (saved.engine || "").toString();
+    if (v === "edge" || v === "google" || v === "browser") {
+      return { engine: v, edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, browserName: saved.name || "" };
+    }
+    return { engine: "edge", edgeVoice: DEFAULT_EDGE_VOICE, browserName: "" };
+  }
+  var voicesSettled = false, voicesTimedOut = false;
+  function voicesTimeoutCheck() {
+    // After a few seconds with no browser voices, say so honestly —
+    // never leave the picker on "Loading voices…" forever.
+    if (voicesSettled) return;
+    voicesTimedOut = true;
+    loadVoices();
+  }
   function loadVoices() {
+    var sel = $("voiceSelect");
+    var choice = currentVoiceChoice();
     if (!("speechSynthesis" in window)) {
-      var sel = $("voiceSelect");
-      if (sel) sel.innerHTML = "<option value=''>Speech not supported in this browser — try Chrome, Edge or Safari</option>";
-      var list = $("voiceList");
-      if (list) list.innerHTML = "<p class='muted'>This browser doesn't offer speech synthesis. Try Chrome, Edge or Safari — their built-in voices are free and sound human.</p>";
+      if (sel) sel.innerHTML = "<option value=''>Speech not supported in this browser — the free Microsoft AI voices above still work</option>";
+      voicesSettled = true;
+      renderVoiceList();
+      syncBottomBar();
       return;
     }
     voices = window.speechSynthesis.getVoices().slice().sort(function (a, b) { return voiceScore(b) - voiceScore(a); });
-    if (!voices.length) return; // voiceschanged will fire again
-    var sel = $("voiceSelect");
-    var saved = storeGet(LS.voice, {}) || {};
-    var selectedName = saved.name || "";
-    var shown = visibleVoices();
-    sel.innerHTML = "";
-    if (!shown.length && voices.length) {
-      // Every voice on this device is robotic: say so honestly instead of
-      // quietly playing a robot voice.
-      var opt = el("option", null, "Only robotic voices on this device — open in Edge or Chrome, or use a premium voice below");
-      opt.value = "";
-      sel.appendChild(opt);
-    }
-    shown.forEach(function (v) {
-      var desc = voiceDescription(v);
-      var opt = el("option", null, v.name + " — " + desc.text + " (" + v.lang + " · " + voiceQuality(v) + ")" + (v.localService ? "" : " (online)"));
-      opt.value = v.name;
-      if (v.name === selectedName) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    if (!selectedName || !shown.some(function (v) { return v.name === selectedName; })) {
-      // Default = most natural voice available, never the first listed.
-      var best = bestHumanVoice();
-      if (best) sel.value = best.name;
-      else if (voices.length) sel.value = "";
+    if (voices.length) voicesSettled = true;
+    if (sel) {
+      sel.innerHTML = "";
+      // Group 1 — Microsoft AI voices (Edge Read Aloud): free, no key, default.
+      var g1 = document.createElement("optgroup");
+      g1.label = "Microsoft AI voices — free, no key";
+      EDGE_VOICES.forEach(function (ev) {
+        var opt = el("option", null, ev.label + " — " + ev.desc + (ev.tag ? " (" + ev.tag + ")" : ""));
+        opt.value = "edge:" + ev.name;
+        if (choice.engine === "edge" && choice.edgeVoice === ev.name) opt.selected = true;
+        g1.appendChild(opt);
+      });
+      sel.appendChild(g1);
+      // Google free voice.
+      var g1b = document.createElement("optgroup");
+      g1b.label = "Google free voice — no key";
+      var gopt = el("option", null, "Google voice — clear, natural (free, no key)");
+      gopt.value = "google:free";
+      if (choice.engine === "google") gopt.selected = true;
+      g1b.appendChild(gopt);
+      sel.appendChild(g1b);
+      // Group 2 — Browser voices (on this device).
+      var g2 = document.createElement("optgroup");
+      g2.label = "Browser voices — free, on your device";
+      var shown = visibleVoices();
+      if (!shown.length && voices.length) {
+        var ropt = el("option", null, "Only robotic voices on this device — use the free Microsoft AI voices above");
+        ropt.value = "";
+        g2.appendChild(ropt);
+      }
+      shown.forEach(function (v) {
+        var desc = voiceDescription(v);
+        var opt = el("option", null, v.name + " — " + desc.text + " (" + v.lang + " · " + voiceQuality(v) + ")" + (v.localService ? "" : " (online)"));
+        opt.value = "browser:" + v.name;
+        if (choice.engine === "browser" && choice.browserName === v.name) opt.selected = true;
+        g2.appendChild(opt);
+      });
+      if (!voices.length) {
+        var lopt = el("option", null, voicesTimedOut ? "No voices found on this device — try the free Microsoft AI voices above" : "Loading voices…");
+        lopt.value = "";
+        g2.appendChild(lopt);
+      }
+      sel.appendChild(g2);
+      // Group 3 — Premium voices (your key), if one is configured.
+      if (premiumActive()) {
+        var g3 = document.createElement("optgroup");
+        g3.label = "Premium voices — your key";
+        var popt = el("option", null, "Premium: " + premiumCfg().provider + " (set below)");
+        popt.value = "premium:" + premiumCfg().provider;
+        g3.appendChild(popt);
+        sel.appendChild(g3);
+      }
+      // Default = Microsoft Aria unless the visitor picked otherwise.
+      if (!sel.value || sel.value === "") sel.value = "edge:" + DEFAULT_EDGE_VOICE;
     }
     var toggle = $("humanOnlyToggle");
     if (toggle) toggle.checked = humanOnlyOn();
@@ -802,60 +1039,126 @@
   }
   function chosenVoice() {
     var sel = $("voiceSelect");
-    var name = sel ? sel.value : "";
-    var found = voices.find(function (v) { return v.name === name; });
+    var val = sel ? sel.value : "";
+    var name = val.indexOf("browser:") === 0 ? val.slice(8) : "";
+    var found = name ? voices.find(function (v) { return v.name === name; }) : null;
     if (found) return found;
+    var saved = storeGet(LS.voice, {}) || {};
+    if (saved.name) { var s = voices.find(function (v) { return v.name === saved.name; }); if (s) return s; }
     return bestHumanVoice() || voices[0] || null;
   }
   function renderVoiceList() {
     var list = $("voiceList"); if (!list) return;
     list.innerHTML = "";
-    if (!voices.length) { list.appendChild(el("p", "muted", "Loading voices…")); return; }
-    if (onlyRoboticVoices()) {
-      var warn = el("div", "voice-warn");
-      warn.appendChild(el("strong", null, "Only robotic voices on this device."));
-      warn.appendChild(el("p", null, "This browser only offers old robotic voices, so Auralis won't pretend one of them sounds human. For a human voice, open this page in Microsoft Edge or Chrome (their Natural voices are free and unlimited), or add a premium voice below — ElevenLabs is the most realistic, and its free tier covers short listens."));
-      list.appendChild(warn);
-      return;
-    }
-    var shown = visibleVoices();
-    if (!shown.length) { list.appendChild(el("p", "muted", "Loading voices…")); return; }
-    var recommended = bestHumanVoice();
-    shown.slice(0, 8).forEach(function (v) {
+    // Group 1 — Microsoft AI voices (Edge Read Aloud): free, no key, default.
+    list.appendChild(el("h4", "voice-group-head", "Microsoft AI voices — free, no key"));
+    list.appendChild(el("p", "muted", "Real Microsoft Natural voices, played over the internet. No account, no key, no credits — unlimited. ★ Microsoft Aria is the default."));
+    EDGE_VOICES.forEach(function (ev) {
       var row = el("div", "voice-row");
       var info = el("div", "voice-info");
       var nameRow = el("div", "voice-name");
-      nameRow.textContent = v.name + " ";
-      var badge = el("span", "voice-badge " + voiceQuality(v).toLowerCase(), voiceQuality(v));
-      nameRow.appendChild(badge);
-      var desc = voiceDescription(v);
-      if (desc.tag && desc.tag !== voiceQuality(v)) {
-        nameRow.appendChild(el("span", "voice-badge", desc.tag));
-      }
-      if (recommended && v.name === recommended.name) {
-        nameRow.appendChild(el("span", "recommended-badge", "★ Recommended"));
-      }
+      nameRow.textContent = ev.label + " ";
+      nameRow.appendChild(el("span", "voice-badge natural", "AI · Free"));
+      if (ev.tag) nameRow.appendChild(el("span", "voice-badge", ev.tag));
+      if (ev.name === DEFAULT_EDGE_VOICE) nameRow.appendChild(el("span", "recommended-badge", "★ Recommended"));
       info.appendChild(nameRow);
-      info.appendChild(el("div", "voice-meta", v.lang + (v.localService ? " · on-device" : " · online")));
-      info.appendChild(el("div", "voice-desc", desc.text));
+      info.appendChild(el("div", "voice-meta", ev.name + " · Microsoft Natural"));
+      info.appendChild(el("div", "voice-desc", ev.desc));
       row.appendChild(info);
       var b = el("button", "btn btn-ghost btn-small", "▶ Preview");
       b.type = "button";
-      b.addEventListener("click", function () { previewVoice(v); });
+      b.addEventListener("click", function () { previewEdgeVoice(ev); });
       row.appendChild(b);
       var use = el("button", "btn btn-dark btn-small", "Use");
       use.type = "button";
       use.addEventListener("click", function () {
-        var sel = $("voiceSelect"); if (sel) sel.value = v.name;
-        persistVoiceChoice();
-        toast("Voice set to " + v.name + ".");
+        var saved = storeGet(LS.voice, {}) || {};
+        saved.engine = "edge"; saved.edgeVoice = ev.name; storeSet(LS.voice, saved);
+        var sel = $("voiceSelect"); if (sel) sel.value = "edge:" + ev.name;
+        syncBottomBar();
+        toast("Voice set to " + ev.label + " (Microsoft AI, free).");
       });
       row.appendChild(use);
       list.appendChild(row);
     });
-    if (humanOnlyOn() && voices.length > shown.length) {
-      list.appendChild(el("p", "muted", (voices.length - shown.length) + " robotic voice(s) hidden. Turn off “Human-sounding voices only” to see them."));
+    // Google free voice.
+    var grow = el("div", "voice-row");
+    var ginfo = el("div", "voice-info");
+    var gname = el("div", "voice-name");
+    gname.textContent = "Google voice ";
+    gname.appendChild(el("span", "voice-badge natural", "AI · Free"));
+    ginfo.appendChild(gname);
+    ginfo.appendChild(el("div", "voice-meta", "translate.google.com · free"));
+    ginfo.appendChild(el("div", "voice-desc", "Clear, natural — the free Google voice, played over the internet. No key, no credits. Used automatically if the Microsoft voices don't answer."));
+    grow.appendChild(ginfo);
+    var gb = el("button", "btn btn-ghost btn-small", "▶ Preview");
+    gb.type = "button";
+    gb.addEventListener("click", previewGoogleVoice);
+    grow.appendChild(gb);
+    var guse = el("button", "btn btn-dark btn-small", "Use");
+    guse.type = "button";
+    guse.addEventListener("click", function () {
+      var saved = storeGet(LS.voice, {}) || {};
+      saved.engine = "google"; storeSet(LS.voice, saved);
+      var sel = $("voiceSelect"); if (sel) sel.value = "google:free";
+      syncBottomBar();
+      toast("Voice set to the free Google voice.");
+    });
+    grow.appendChild(guse);
+    list.appendChild(grow);
+    // Group 2 — Browser voices (on this device).
+    list.appendChild(el("h4", "voice-group-head", "Browser voices — free, on your device"));
+    if (!("speechSynthesis" in window)) {
+      list.appendChild(el("p", "muted", "This browser doesn't offer speech synthesis. The free Microsoft AI voices above still work — they play audio, not browser speech."));
+    } else if (!voices.length) {
+      list.appendChild(el("p", "muted", voicesTimedOut ? "No voices found on this device — try the free Microsoft AI voices above." : "Loading voices…"));
+    } else if (onlyRoboticVoices()) {
+      var warn = el("div", "voice-warn");
+      warn.appendChild(el("strong", null, "Only robotic voices on this device."));
+      warn.appendChild(el("p", null, "This browser only offers old robotic voices, so Auralis won't pretend one of them sounds human. The free Microsoft AI voices above are the fix — Microsoft Aria is already the default. Or add a premium voice below."));
+      list.appendChild(warn);
+    } else {
+      var shown = visibleVoices();
+      var recommended = bestHumanVoice();
+      shown.slice(0, 8).forEach(function (v) {
+        var row = el("div", "voice-row");
+        var info = el("div", "voice-info");
+        var nameRow = el("div", "voice-name");
+        nameRow.textContent = v.name + " ";
+        var badge = el("span", "voice-badge " + voiceQuality(v).toLowerCase(), voiceQuality(v));
+        nameRow.appendChild(badge);
+        var desc = voiceDescription(v);
+        if (desc.tag && desc.tag !== voiceQuality(v)) {
+          nameRow.appendChild(el("span", "voice-badge", desc.tag));
+        }
+        if (recommended && v.name === recommended.name) {
+          nameRow.appendChild(el("span", "recommended-badge", "★ Recommended"));
+        }
+        info.appendChild(nameRow);
+        info.appendChild(el("div", "voice-meta", v.lang + (v.localService ? " · on-device" : " · online")));
+        info.appendChild(el("div", "voice-desc", desc.text));
+        row.appendChild(info);
+        var b = el("button", "btn btn-ghost btn-small", "▶ Preview");
+        b.type = "button";
+        b.addEventListener("click", function () { previewVoice(v); });
+        row.appendChild(b);
+        var use = el("button", "btn btn-dark btn-small", "Use");
+        use.type = "button";
+        use.addEventListener("click", function () {
+          var sel = $("voiceSelect"); if (sel) sel.value = "browser:" + v.name;
+          persistVoiceChoice();
+          toast("Voice set to " + v.name + ".");
+        });
+        row.appendChild(use);
+        list.appendChild(row);
+      });
+      if (humanOnlyOn() && voices.length > shown.length) {
+        list.appendChild(el("p", "muted", (voices.length - shown.length) + " robotic voice(s) hidden. Turn off “Human-sounding voices only” to see them."));
+      }
     }
+    // Group 3 — Premium voices (your key).
+    list.appendChild(el("h4", "voice-group-head", "Premium voices — your key"));
+    list.appendChild(el("p", "muted", premiumActive() ? "★ Using " + premiumCfg().provider + " (your key, set below)." : "Add your own key below — ElevenLabs, Cartesia, OpenAI, Azure or Google. Your key stays in this browser only."));
   }
   function previewVoice(v) {
     if (!("speechSynthesis" in window)) { toast("Speech isn't supported in this browser."); return; }
@@ -865,9 +1168,17 @@
     window.speechSynthesis.speak(u);
   }
   function persistVoiceChoice() {
-    var v = chosenVoice();
+    var sel = $("voiceSelect");
+    var val = sel ? sel.value : "";
     var cur = storeGet(LS.voice, {}) || {};
-    if (v) { cur.name = v.name; cur.lang = v.lang; }
+    var prev = currentVoiceChoice();
+    cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.name = "";
+    if (val.indexOf("edge:") === 0) { cur.engine = "edge"; cur.edgeVoice = val.slice(5); }
+    else if (val.indexOf("google:") === 0) { cur.engine = "google"; }
+    else if (val.indexOf("browser:") === 0) { cur.engine = "browser"; cur.name = val.slice(8); }
+    else if (val.indexOf("premium:") === 0) { cur.engine = prev.engine; cur.edgeVoice = prev.edgeVoice; cur.name = prev.browserName; }
+    var v = chosenVoice();
+    if (v && cur.engine === "browser") { cur.name = v.name; cur.lang = v.lang; }
     var r = $("rateRange"), p = $("pitchRange");
     cur.rate = r ? parseFloat(r.value) : 1; cur.pitch = p ? parseFloat(p.value) : 1;
     var t = $("humanOnlyToggle");
@@ -923,7 +1234,7 @@
     if (!("speechSynthesis" in window)) { toast("Speech isn't supported in this browser — try Chrome, Edge or Safari."); return; }
     if (!state.sentences.length) { toast("Open an article first."); return; }
     if (onlyRoboticVoices()) {
-      toast("Heads up: this device only has robotic voices. For a human voice, open in Edge or Chrome, or add an ElevenLabs key below.");
+      toast("Heads up: this device only has robotic voices. For a human voice, use the free Microsoft AI voices above — they're the default — or add a key below.");
     }
     window.speechSynthesis.cancel();
     state.playing = true; state.paused = false; state.engine = "browser";
@@ -944,15 +1255,237 @@
     setPlayButton(true);
   }
 
+  /* ---------------- playback: free AI voices (Microsoft Edge Read Aloud + Google) ----------------
+   * No key, no account, no credits. Microsoft Edge Read Aloud is the
+   * default: real Microsoft Natural voices (Aria, Jenny, Guy…) served
+   * from speech.platform.bing.com, the same endpoint Microsoft Edge uses
+   * for Read Aloud. It works in Microsoft Edge; in other browsers the
+   * handshake may be refused, so we fall back to the free Google voice
+   * (translate.google.com TTS), which returns real MP3 audio.
+   * Verified from this sandbox (Nov 10, 2026): voices list HTTP 200,
+   * 170,998 bytes, 322 voices; the WebSocket synthesis handshake was
+   * refused with HTTP 403 in every variant tried here (the sandbox's
+   * egress proxy cannot pass the handshake), so Edge is best-effort in
+   * the browser and the verified Google path is the fallback. Karaoke
+   * highlighting is timer-estimated on this engine. */
+  var EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+  var EDGE_SEC_MS_GEC_VERSION = "1-141.0.3537.57";
+  var EDGE_VOICES = [
+    { name: "en-US-AriaNeural", label: "Microsoft Aria", desc: "Warm, friendly American woman — our most natural free voice", tag: "Best for long reads" },
+    { name: "en-US-JennyNeural", label: "Microsoft Jenny", desc: "Bright, upbeat American woman", tag: "Energetic" },
+    { name: "en-US-GuyNeural", label: "Microsoft Guy", desc: "Calm, steady American man — great for long articles", tag: "Calm" },
+    { name: "en-US-RyanNeural", label: "Microsoft Ryan", desc: "Warm, conversational American man", tag: "Warm" },
+    { name: "en-US-EmmaNeural", label: "Microsoft Emma", desc: "Clear, gentle American woman", tag: "Warm" },
+    { name: "en-GB-SoniaNeural", label: "Microsoft Sonia", desc: "Warm, clear British woman", tag: "Warm" },
+    { name: "en-GB-RyanNeural", label: "Microsoft Ryan (UK)", desc: "Warm, clear British man", tag: "Warm" },
+    { name: "en-US-ChristopherNeural", label: "Microsoft Christopher", desc: "Steady American man, newsreader style", tag: "Calm" },
+    { name: "en-AU-NatashaNeural", label: "Microsoft Natasha", desc: "Warm Australian woman", tag: "Warm" },
+    { name: "en-US-EricNeural", label: "Microsoft Eric", desc: "Clear, steady American man", tag: "Calm" }
+  ];
+  var DEFAULT_EDGE_VOICE = "en-US-AriaNeural";
+  function edgeVoiceByName(n) { return EDGE_VOICES.find(function (v) { return v.name === n; }) || EDGE_VOICES[0]; }
+  function currentEdgeVoice() { return (currentVoiceChoice().edgeVoice || DEFAULT_EDGE_VOICE); }
+  function edgeRateString() {
+    var r = currentRate();
+    var pct = Math.round((r - 1) * 100);
+    return pct === 0 ? "+0%" : (pct > 0 ? "+" + pct + "%" : pct + "%");
+  }
+  function edgeSecMsGec() {
+    // Sec-MS-GEC = uppercase hex SHA-256 of (5-minute-floored Windows
+    // file-time ticks, as a decimal string) + TRUSTED_CLIENT_TOKEN.
+    // Ticks are ~1.3e17 — beyond float64 precision — so use BigInt.
+    if (!window.crypto || !crypto.subtle || typeof BigInt === "undefined") return Promise.reject(new Error("no secure crypto"));
+    var ticks = (BigInt(Math.floor(Date.now() / 1000)) + 11644473600n) / 300n * 300n * 10000000n;
+    var data = new TextEncoder().encode(ticks.toString() + EDGE_TRUSTED_CLIENT_TOKEN);
+    return crypto.subtle.digest("SHA-256", data).then(function (buf) {
+      return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ("0" + b.toString(16)).slice(-2); }).join("").toUpperCase();
+    });
+  }
+  var edgeWs = null;
+  function edgeClose() {
+    if (edgeWs) { try { edgeWs.close(); } catch (e) {} edgeWs = null; }
+  }
+  function edgeConnect() {
+    if (edgeWs && edgeWs.readyState === 1) return Promise.resolve(edgeWs);
+    if (state.edgeFailed) return Promise.reject(new Error("Microsoft voices unavailable"));
+    return edgeSecMsGec().then(function (gec) {
+      return new Promise(function (resolve, reject) {
+        var connId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+          var r = Math.random() * 16 | 0;
+          return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+        var url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=" + EDGE_TRUSTED_CLIENT_TOKEN + "&Sec-MS-GEC=" + gec + "&Sec-MS-GEC-Version=" + EDGE_SEC_MS_GEC_VERSION + "&ConnectionId=" + connId;
+        var ws;
+        try { ws = new WebSocket(url); } catch (e) { state.edgeFailed = true; reject(e); return; }
+        ws.binaryType = "arraybuffer";
+        edgeWs = ws;
+        var done = false;
+        var to = setTimeout(function () { if (!done) { done = true; try { ws.close(); } catch (e) {} reject(new Error("Microsoft voices timed out")); } }, 6000);
+        ws.onopen = function () {
+          if (done) return; done = true; clearTimeout(to);
+          ws.send("Path:speech.config\r\nContent-Type:application/json; charset=utf-8\r\n\r\n" + JSON.stringify({ context: { synthesis: { audio: { metadataoptions: { sentenceBoundaryEnabled: "false", wordBoundaryEnabled: "true" }, outputFormat: "audio-24khz-48kbitrate-mono-mp3" } } } }));
+          resolve(ws);
+        };
+        ws.onerror = function () { if (!done) { done = true; clearTimeout(to); state.edgeFailed = true; edgeWs = null; reject(new Error("Microsoft voices unavailable")); } };
+        ws.onclose = function () { if (edgeWs === ws) edgeWs = null; };
+      });
+    });
+  }
+  function edgeSynthesize(text, voiceName) {
+    return edgeConnect().then(function (ws) {
+      return new Promise(function (resolve, reject) {
+        var chunks = [];
+        var to = setTimeout(function () { cleanup(); reject(new Error("Microsoft synthesis timed out")); }, 25000);
+        function onMsg(ev) {
+          var data = ev.data;
+          if (typeof data === "string") {
+            if (data.indexOf("Path:turn.end") !== -1) {
+              cleanup();
+              if (!chunks.length) { reject(new Error("Microsoft returned no audio")); return; }
+              resolve(new Blob(chunks, { type: "audio/mpeg" }));
+            }
+            return;
+          }
+          var hlen = new DataView(data).getUint16(0, false);
+          var header = "";
+          try { header = new TextDecoder().decode(data.slice(2, 2 + hlen)); } catch (e) {}
+          if (header.indexOf("Path:audio") !== -1) chunks.push(data.slice(2 + hlen));
+        }
+        function cleanup() { clearTimeout(to); ws.removeEventListener("message", onMsg); }
+        ws.addEventListener("message", onMsg);
+        var ssml = "<speak version='1.0' xml:lang='en-US'><voice name='" + esc(voiceName) + "'><prosody rate='" + edgeRateString() + "'>" + esc(text) + "</prosody></voice></speak>";
+        ws.send("Path:ssml\r\nContent-Type:application/ssml+xml\r\n\r\n" + ssml);
+      });
+    }).catch(function (err) { state.edgeFailed = true; throw err; });
+  }
+  function googleFreeUrl(text) {
+    return "https://translate.google.com/translate_tts?ie=UTF-8&q=" + encodeURIComponent(text) + "&tl=en&client=tw-ob";
+  }
+  // Chains several short Google TTS chunks behind one play/pause/onended
+  // interface (Google caps each request at ~200 characters).
+  function googleAudioChain(chunks) {
+    var audios = chunks.map(function (c) { var a = new Audio(googleFreeUrl(c)); a.preload = "auto"; return a; });
+    var i = 0, endedFn = null;
+    audios.forEach(function (a, k) {
+      a.addEventListener("ended", function () {
+        if (k < audios.length - 1) { i = k + 1; audios[i].play().catch(function () {}); }
+        else if (endedFn) endedFn();
+      });
+      a.addEventListener("error", function () {
+        if (k < audios.length - 1) { i = k + 1; audios[i].play().catch(function () {}); }
+        else if (endedFn) endedFn();
+      });
+    });
+    return {
+      play: function () { return audios[i].play(); },
+      pause: function () { audios[i].pause(); },
+      get currentTime() { return audios[i].currentTime || 0; },
+      set currentTime(v) { try { audios[i].currentTime = v; } catch (e) {} },
+      set onended(fn) { endedFn = fn; },
+      get onended() { return endedFn; },
+      set onerror(fn) { /* errors advance the chain; a final error ends it */ }
+    };
+  }
+  function edgeSentenceAudio(text) {
+    return edgeSynthesize(text, currentEdgeVoice()).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var a = new Audio(url);
+      a.addEventListener("ended", function () { URL.revokeObjectURL(url); });
+      return a;
+    });
+  }
+  function googleSentenceAudio(text) {
+    return Promise.resolve(googleAudioChain(chunkText(text, 180)));
+  }
+  function freeFetchAudio(text) {
+    if (state.freeTransport === "google") return googleSentenceAudio(text);
+    if (state.freeTransport === "edge") return edgeSentenceAudio(text);
+    // Transport not decided yet this session: try Microsoft first, fall
+    // back to the free Google voice on any failure.
+    return edgeSentenceAudio(text).then(function (a) {
+      state.freeTransport = "edge";
+      return a;
+    }).catch(function () {
+      state.freeTransport = "google";
+      toast("Microsoft voices didn't answer — using the free Google voice instead.");
+      return googleSentenceAudio(text);
+    });
+  }
+  function freeWordTimer(s) {
+    // Timer-estimated karaoke highlighting (the free audio path has no
+    // word-boundary events in the browser).
+    var words = s.text.split(/\s+/).filter(Boolean);
+    var estMs = (words.length / (175 * currentRate())) * 60000;
+    var wi = 0;
+    clearTimeout(state.freeTimer);
+    var step = Math.max(120, estMs / Math.max(1, words.length));
+    var tick = function () {
+      if (!state.playing || state.engine !== "free") return;
+      highlightWord(s.startWord + wi);
+      wi++;
+      if (wi < words.length) state.freeTimer = setTimeout(tick, step);
+    };
+    tick();
+  }
+  function playFree(fromIdx) {
+    if (!state.sentences.length) { toast("Open an article first."); return; }
+    state.playing = true; state.paused = false; state.engine = "free";
+    setPlayButton(true);
+    var start = typeof fromIdx === "number" ? fromIdx : (state.currentSentence < 0 ? 0 : state.currentSentence);
+    var idx = start;
+    function next() {
+      if (!state.playing || state.engine !== "free") return;
+      if (idx >= state.sentences.length) { finishPlayback(); return; }
+      var s = state.sentences[idx];
+      state.currentSentence = idx;
+      highlightSentence(idx);
+      updateProgress();
+      freeWordTimer(s);
+      state.freeAudio = null;
+      freeFetchAudio(s.text).then(function (audio) {
+        if (!state.playing || state.engine !== "free") return;
+        state.freeAudio = audio;
+        audio.onended = function () { idx++; next(); };
+        audio.onerror = function () { idx++; next(); };
+        if (state.paused) return; // resume will play it
+        audio.play().catch(function () { idx++; next(); });
+      }).catch(function () {
+        // Both free transports failed — fall back to the browser voice.
+        state.playing = false; state.paused = false;
+        toast("Free AI voices aren't answering — using your browser voice instead.");
+        playBrowser(idx);
+      });
+    }
+    next();
+  }
+  function previewEdgeVoice(ev) {
+    var sample = "Hello — I'm " + ev.label + ". I can read any article aloud for you, in a voice that sounds almost human.";
+    edgeSynthesize(sample, ev.name).then(function (blob) {
+      var a = new Audio(URL.createObjectURL(blob));
+      a.play().catch(function () { toast("Audio playback was blocked — tap play again."); });
+    }).catch(function () {
+      toast("Microsoft voices didn't answer — playing the free Google voice instead.");
+      previewGoogleVoice();
+    });
+  }
+  function previewGoogleVoice() {
+    var a = new Audio(googleFreeUrl("Hello — I'm the free Google voice. I can read any article aloud for you."));
+    a.play().catch(function () { toast("Audio playback was blocked — tap play again."); });
+  }
+
   function setPlayButton(playing) {
-    var label = playing ? "⏸ Pause" : "▶ Listen";
+    var label = playing ? "⏸ Pause" : "▶ Play";
     var b = $("playPauseBtn"); if (b) b.textContent = label;
     var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = label;
   }
   function syncBottomBar() {
-    var v = chosenVoice();
     var nameEl = $("bottomVoiceName");
-    if (nameEl) nameEl.textContent = "Voice: " + (premiumActive() ? (premiumCfg().provider + " · " + (premiumCfg().voiceId || "default")) : (v ? v.name : "—"));
+    if (!nameEl) return;
+    if (premiumActive()) { nameEl.textContent = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)"; return; }
+    var choice = currentVoiceChoice();
+    if (choice.engine === "edge") nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
+    else if (choice.engine === "google") nameEl.textContent = "Voice: Google voice · free";
+    else { var v = chosenVoice(); nameEl.textContent = "Voice: " + (v ? v.name : "—") + " · browser"; }
   }
 
   // Skip ~15 seconds of speech: for premium audio, seek the audio element;
@@ -966,13 +1499,21 @@
       } catch (e) {}
       return;
     }
+    if (state.engine === "free" && state.freeAudio) {
+      try {
+        state.freeAudio.currentTime = Math.max(0, state.freeAudio.currentTime + dir * 15);
+        toast(dir > 0 ? "Skipped forward 15 seconds." : "Skipped back 15 seconds.");
+      } catch (e) {}
+      return;
+    }
     var wordsToSkip = Math.round(15 * (175 * currentRate()) / 60);
     var targetWord = clamp((state.currentSentence < 0 ? 0 : state.sentences[state.currentSentence].startWord) + dir * wordsToSkip, 0, Math.max(0, state.totalWords - 1));
     var target = 0;
     state.sentences.forEach(function (s, i) { if (s.startWord <= targetWord) target = i; });
     var wasPlaying = state.playing && !state.paused;
+    var wasFree = state.engine === "free";
     stopPlayback(true);
-    if (wasPlaying) { if (premiumActive()) playPremium(target); else playBrowser(target); }
+    if (wasPlaying) { if (wasFree) playFree(target); else if (premiumActive()) playPremium(target); else playBrowser(target); }
     else { state.currentSentence = target; highlightSentence(target); updateProgress(); }
   }
 
@@ -995,8 +1536,11 @@
     state.playing = false; state.paused = false;
     clearTimeout(state.wordTimer);
     clearTimeout(state.premiumTimer);
+    clearTimeout(state.freeTimer);
     if ("speechSynthesis" in window) { try { window.speechSynthesis.cancel(); } catch (e) {} }
     if (state.premiumAudio) { try { state.premiumAudio.pause(); } catch (e) {} state.premiumAudio = null; }
+    if (state.freeAudio) { try { state.freeAudio.pause(); } catch (e) {} state.freeAudio = null; }
+    edgeClose();
     setPlayButton(false);
     if (!silent) { clearHighlight(); }
   }
@@ -1067,6 +1611,14 @@
           return new Blob([bytes], { type: "audio/mpeg" });
         });
     }
+    if (c.provider === "cartesia") {
+      var cartesiaVoice = (c.voiceId || "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4").trim();
+      return fetch("https://api.cartesia.ai/tts/bytes", {
+        method: "POST",
+        headers: { "X-API-Key": key, "Cartesia-Version": "2026-08-14", "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: (c.model || "sonic-3"), transcript: text, voice: { mode: "id", id: cartesiaVoice }, language: "en", output_format: { container: "mp3", encoding: "mp3", sample_rate: 44100 } })
+      }).then(function (r) { if (!r.ok) throw new Error("Cartesia HTTP " + r.status); return r.blob(); });
+    }
     if (c.provider === "generic-tts") {
       // Any OpenAI-compatible /audio/speech endpoint (local servers,
       // Kokoro, Piper servers, hosted TTS APIs with the same shape).
@@ -1129,41 +1681,60 @@
     if (!state.sentences.length) { toast("Paste a link, some text, or open a sample first."); return; }
     if (state.playing && !state.paused) {
       if (state.engine === "premium" && state.premiumAudio) { state.premiumAudio.pause(); state.paused = true; setPlayButton(false); }
+      else if (state.engine === "free") { if (state.freeAudio) state.freeAudio.pause(); state.paused = true; setPlayButton(false); }
       else pauseBrowser();
       return;
     }
     if (state.playing && state.paused) {
       if (state.engine === "premium" && state.premiumAudio) { state.premiumAudio.play(); state.paused = false; setPlayButton(true); }
+      else if (state.engine === "free") {
+        state.paused = false; setPlayButton(true);
+        if (state.freeAudio) state.freeAudio.play().catch(function () {});
+      }
       else resumeBrowser();
       return;
     }
-    // Fresh play: premium if configured, else browser. Pressing play is
-    // the user asking to follow along again.
+    // Fresh play: premium if configured, else the chosen free AI voice,
+    // else the browser voice. Pressing play is the user asking to follow
+    // along again.
     setAutoFollow(true, true);
-    if (premiumActive()) playPremium(state.currentSentence >= state.sentences.length - 1 ? 0 : undefined);
-    else playBrowser(state.currentSentence >= state.sentences.length - 1 ? 0 : undefined);
+    var restart = state.currentSentence >= state.sentences.length - 1 ? 0 : undefined;
+    if (premiumActive()) playPremium(restart);
+    else if (currentVoiceChoice().engine === "free") playFree(restart);
+    else playBrowser(restart);
   }
 
   function skipSentence(dir) {
     if (!state.sentences.length) return;
     var next = clamp((state.currentSentence < 0 ? 0 : state.currentSentence) + dir, 0, state.sentences.length - 1);
     var wasPlaying = state.playing && !state.paused;
+    var wasFree = state.engine === "free";
     stopPlayback(true);
     state.currentSentence = next - 1; // play functions advance from here
-    if (wasPlaying) { if (premiumActive()) playPremium(next); else playBrowser(next); }
+    if (wasPlaying) { if (wasFree) playFree(next); else if (premiumActive()) playPremium(next); else playBrowser(next); }
     else { state.currentSentence = next; highlightSentence(next); updateProgress(); }
   }
 
   /* ---------------- premium provider UI ---------------- */
   // Voice plugins. Each provider is key-only-in-this-browser, with a test
-  // button and a set-as-default action. Free-tier honesty: ElevenLabs free
-  // credits are limited; browser neural voices are free and unlimited.
+  // button and a set-as-default action. Free-tier honesty: ElevenLabs and
+  // Cartesia free credits are limited; the Microsoft AI voices are free
+  // and unlimited, no key at all.
   var OPENAI_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
   var AZURE_VOICES = ["en-US-AriaNeural", "en-US-JennyNeural", "en-US-GuyNeural", "en-US-RyanNeural", "en-US-EmmaNeural", "en-GB-SoniaNeural", "en-GB-RyanNeural", "en-AU-NatashaNeural"];
   var GOOGLE_VOICES = ["en-US-Neural2-F", "en-US-Neural2-D", "en-US-Neural2-A", "en-US-Wavenet-F", "en-US-Wavenet-D", "en-GB-Neural2-B", "en-GB-Wavenet-B"];
+  // Cartesia public starter voices (voice IDs are UUIDs, from Cartesia's docs).
+  var CARTESIA_VOICES = [
+    { id: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", name: "Skylar" },
+    { id: "1df0b2fe-acb0-4484-8f32-9e231d9e7a90", name: "Harvey" },
+    { id: "68fb6747-b6ea-4c44-a18e-4e29921424d3", name: "Derek" },
+    { id: "55deba52-bc73-4481-ab69-9c8831c8a7c3", name: "Camille" },
+    { id: "a0e99841-438c-4a64-b679-ae501e7d6091", name: "Professional female" }
+  ];
   var PROVIDER_META = {
     none: { label: "Browser voice", fields: [] },
-    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. Browser neural voices are free and unlimited." },
+    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free Microsoft AI voices above are unlimited with no key at all." },
+    cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free Microsoft AI voices above are unlimited with no key at all." },
     openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Browser neural voices are free and unlimited." },
     azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Browser neural voices are free and unlimited." },
     google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Browser neural voices are free and unlimited." },
@@ -1274,48 +1845,55 @@
       });
       vlField.appendChild(voiceListSel);
       form.appendChild(vlField);
-      // Clone a voice (Instant Voice Clone): 1+ min of clean sample audio.
-      var cloneBox = el("div", "field");
-      cloneBox.appendChild(el("label", null, "Clone a voice (ElevenLabs Instant Voice Clone)"));
-      var cloneHint = el("p", "muted", "Upload 1+ minute of clean sample audio — one voice, no music, no background noise. The clone is created in your ElevenLabs account with your key.");
-      cloneBox.appendChild(cloneHint);
-      var cloneName = document.createElement("input");
-      cloneName.id = "pvCloneName"; cloneName.type = "text"; cloneName.placeholder = "Clone name, e.g. My Reading Voice"; cloneName.maxLength = 60;
-      cloneBox.appendChild(cloneName);
-      var cloneFile = document.createElement("input");
-      cloneFile.id = "pvCloneFile"; cloneFile.type = "file"; cloneFile.accept = "audio/*"; cloneFile.style.marginTop = "8px";
-      cloneBox.appendChild(cloneFile);
-      var cloneBtn = el("button", "btn btn-ghost btn-small", "＋ Clone this voice");
-      cloneBtn.type = "button"; cloneBtn.style.marginTop = "8px";
-      cloneBtn.addEventListener("click", function () {
+      // Voice cloning lives in Clone Studio (Voices section, below) —
+      // one place for ElevenLabs and Cartesia, from your own key.
+      var cloneHint = el("p", "muted", "Want to clone a voice? Use Clone Studio below — it works with ElevenLabs and Cartesia, from your own key.");
+      form.appendChild(cloneHint);
+      var cloneOpen = el("button", "btn btn-ghost btn-small", "Open Clone Studio ↓");
+      cloneOpen.type = "button";
+      cloneOpen.addEventListener("click", function () { var cs = $("cloneStudio"); if (cs) cs.scrollIntoView({ behavior: "smooth", block: "start" }); });
+      form.appendChild(cloneOpen);
+    }
+    // Cartesia: load the account's voices + a starter menu of public voices.
+    if (c.provider === "cartesia") {
+      var cartesiaLoadRow = el("div"); cartesiaLoadRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px";
+      var cartesiaLoadBtn = el("button", "btn btn-ghost btn-small", "↻ Load my Cartesia voices");
+      cartesiaLoadBtn.type = "button";
+      cartesiaLoadBtn.addEventListener("click", function () {
         var key = keyInput.value.trim();
-        var name = cloneName.value.trim();
-        var file = cloneFile.files && cloneFile.files[0];
-        if (!key) { toast("Paste your ElevenLabs key first."); return; }
-        if (!name) { toast("Give the clone a name first."); return; }
-        if (!file) { toast("Choose a sample audio file first (1+ minute, clean)."); return; }
-        setBusy(cloneBtn, true, "Cloning…");
-        var fd = new FormData();
-        fd.append("name", name);
-        fd.append("files", file);
-        fetch("https://api.elevenlabs.io/v1/voices/add", { method: "POST", headers: { "xi-api-key": key }, body: fd })
-          .then(function (r) { if (!r.ok) throw new Error("ElevenLabs HTTP " + r.status); return r.json(); })
+        if (!key) { toast("Paste your Cartesia key first."); return; }
+        setBusy(cartesiaLoadBtn, true, "Loading…");
+        fetch("https://api.cartesia.ai/voices", { headers: { "X-API-Key": key, "Cartesia-Version": "2026-08-14" } })
+          .then(function (r) { if (!r.ok) throw new Error("Cartesia HTTP " + r.status); return r.json(); })
           .then(function (j) {
-            setBusy(cloneBtn, false, "＋ Clone this voice");
-            var vid = j.voice_id || "";
-            voiceInput.value = vid;
-            var next = premiumCfg(); next.provider = "elevenlabs"; next.key = key; next.voiceId = vid;
-            storeSet(LS.premium, next);
-            toast("Cloned “" + name + "” — it is now your ElevenLabs voice.");
-            renderProviderForm();
+            setBusy(cartesiaLoadBtn, false, "↻ Load my Cartesia voices");
+            var list = j.data || j.voices || (Array.isArray(j) ? j : []);
+            cartesiaVoiceListSel.innerHTML = "";
+            list.forEach(function (v) {
+              var op = el("option", null, v.name || v.id);
+              op.value = v.id;
+              if (v.id === voiceInput.value.trim()) op.selected = true;
+              cartesiaVoiceListSel.appendChild(op);
+            });
+            toast("Loaded " + list.length + " voice(s). Pick one to use it.");
           })
-          .catch(function (err) {
-            setBusy(cloneBtn, false, "＋ Clone this voice");
-            toast("Clone failed: " + (err && err.message ? err.message : "check your key and sample file."));
-          });
+          .catch(function (err) { setBusy(cartesiaLoadBtn, false, "↻ Load my Cartesia voices"); toast("Couldn't load voices: " + (err.message || "check your key.")); });
       });
-      cloneBox.appendChild(cloneBtn);
-      form.appendChild(cloneBox);
+      cartesiaLoadRow.appendChild(cartesiaLoadBtn);
+      form.appendChild(cartesiaLoadRow);
+      var cartesiaVlField = el("div", "field");
+      cartesiaVlField.appendChild(el("label", null, "My voices (load them first, or pick a starter voice)"));
+      var cartesiaVoiceListSel = document.createElement("select");
+      cartesiaVoiceListSel.id = "pvVoiceList";
+      CARTESIA_VOICES.forEach(function (v) {
+        var op = el("option", null, v.name);
+        op.value = v.id;
+        if (v.id === (c.voiceId || "")) op.selected = true;
+        cartesiaVoiceListSel.appendChild(op);
+      });
+      cartesiaVoiceListSel.addEventListener("change", function () { if (cartesiaVoiceListSel.value) voiceInput.value = cartesiaVoiceListSel.value; });
+      cartesiaVlField.appendChild(cartesiaVoiceListSel);
+      form.appendChild(cartesiaVlField);
     }
     function readFormInto(next) {
       next.provider = c.provider;
@@ -1415,11 +1993,7 @@
       var open = el("button", "btn btn-gold btn-small", "▶ Resume");
       open.type = "button";
       open.addEventListener("click", function () {
-        openArticle(item.title, item.source || "", item.byline || "", item.body || "");
-        var target = clamp(item.sentence || 0, 0, Math.max(0, state.sentences.length - 1));
-        state.currentSentence = target;
-        highlightSentence(target);
-        updateProgress();
+        openArticle(item.title, item.source || "", item.byline || "", item.body || "", 0, item.sentence || 0);
         toast("Resumed where you left off.");
       });
       var del = el("button", "btn btn-ghost btn-small", "Delete");
@@ -1590,6 +2164,83 @@
   }
 
   /* ---------------- wire up ---------------- */
+  /* ---------------- Clone Studio ----------------
+   * Clone a voice YOU own or have permission to clone — your own voice,
+   * or a voice you made. Uses the visitor's own ElevenLabs or Cartesia
+   * key (localStorage only). The sample file never leaves the browser
+   * except to the provider the visitor chose. No downloading, ripping
+   * or cloning of any company's demo audio — ever. */
+  function cloneVoiceWithProvider(provider, key, name, file) {
+    var fd = new FormData();
+    fd.append("name", name);
+    fd.append("files", file);
+    if (provider === "elevenlabs") {
+      return fetch("https://api.elevenlabs.io/v1/voices/add", { method: "POST", headers: { "xi-api-key": key }, body: fd })
+        .then(function (r) { if (!r.ok) throw new Error("ElevenLabs HTTP " + r.status); return r.json(); })
+        .then(function (j) { return j.voice_id || ""; });
+    }
+    if (provider === "cartesia") {
+      return fetch("https://api.cartesia.ai/voices/clone", { method: "POST", headers: { "X-API-Key": key, "Cartesia-Version": "2026-08-14" }, body: fd })
+        .then(function (r) { if (!r.ok) throw new Error("Cartesia HTTP " + r.status); return r.json(); })
+        .then(function (j) { return j.voice_id || j.id || ""; });
+    }
+    return Promise.reject(new Error("Pick ElevenLabs or Cartesia."));
+  }
+  function wireCloneStudio() {
+    var btn = $("cloneBtn"); if (!btn) return;
+    var prov = $("cloneProvider"), keyEl = $("cloneKey");
+    function prefillKey() {
+      var c = premiumCfg();
+      if (keyEl && prov && c.provider === prov.value && c.key) keyEl.value = c.key;
+    }
+    if (prov) prov.addEventListener("change", prefillKey);
+    prefillKey();
+    btn.addEventListener("click", function () {
+      var status = $("cloneStatus");
+      function fail(msg) { if (status) status.textContent = msg; toast(msg); }
+      var provider = (prov && prov.value) || "elevenlabs";
+      var key = ((keyEl && keyEl.value) || "").trim();
+      var name = ((($("cloneName") || {}).value) || "").trim();
+      var file = ((($("cloneFile") || {}).files) || [])[0];
+      if (!key) return fail("Paste your " + (provider === "cartesia" ? "Cartesia" : "ElevenLabs") + " key first — Clone Studio uses your key, stored only in this browser.");
+      if (!name) return fail("Give the clone a name first.");
+      if (!file) return fail("Choose a sample audio file first — 30 seconds to 1 minute of clean audio of a voice you own or have permission to clone.");
+      setBusy(btn, true, "Cloning…");
+      if (status) status.textContent = "Cloning “" + name + "” with " + provider + "…";
+      cloneVoiceWithProvider(provider, key, name, file).then(function (vid) {
+        setBusy(btn, false, "＋ Clone this voice");
+        if (!vid) { fail("The clone was created but no voice ID came back — check your account and try loading your voices."); return; }
+        var next = premiumCfg(); next.provider = provider; next.key = key; next.voiceId = vid;
+        storeSet(LS.premium, next);
+        if (status) status.textContent = "Cloned “" + name + "” — it is now your " + (provider === "cartesia" ? "Cartesia" : "ElevenLabs") + " voice.";
+        toast("Cloned “" + name + "” — it is now your voice.");
+        renderProviderForm();
+      }).catch(function (err) {
+        setBusy(btn, false, "＋ Clone this voice");
+        fail("Clone failed: " + (err && err.message ? err.message : "check your key and sample file.") + (provider === "cartesia" ? " Note: Cartesia voice cloning needs a paid plan." : ""));
+      });
+    });
+  }
+
+  /* ---------------- Hugging Face double-check wiring ---------------- */
+  function wireHf() {
+    var toggle = $("hfToggle"), token = $("hfToken"), status = $("hfStatus");
+    if (!toggle) return;
+    var c = hfCfg();
+    toggle.checked = !!c.enabled;
+    if (token) token.value = c.token || "";
+    function save() {
+      var next = { enabled: !!toggle.checked, token: (token ? token.value.trim() : "") };
+      storeSet(LS.hf, next);
+      if (status) status.textContent = (next.enabled && next.token)
+        ? "Hugging Face double-check is on — borderline paragraphs will be checked."
+        : (next.enabled ? "Add your free Hugging Face token to turn the double-check on." : "Hugging Face is optional — the radar already works without it.");
+    }
+    toggle.addEventListener("change", save);
+    if (token) token.addEventListener("change", save);
+    save();
+  }
+
   function init() {
     wireCoffee();
     wireInstall();
@@ -1759,8 +2410,8 @@
     } catch (e) { /* malformed deep link — ignore */ }
     // Hook openArticle's completion for the deep-link play offer.
     var _openArticle = openArticle;
-    openArticle = function (title, source, byline, bodyText, clutterRemoved) {
-      _openArticle(title, source, byline, bodyText, clutterRemoved);
+    openArticle = function (title, source, byline, bodyText, clutterRemoved, resumeAt) {
+      _openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt);
       if (deepLinkPending) {
         deepLinkPending = false;
         showStatus("ok", "Loaded from your link — ready to listen",
@@ -1924,6 +2575,20 @@
     } else {
       loadVoices();
     }
+    // If browser voices never arrive, say so honestly after a few seconds.
+    setTimeout(voicesTimeoutCheck, 4000);
+    wireCloneStudio();
+    wireHf();
+
+    // Content Radar: show what was removed, and restore with one tap.
+    var rt = $("radarRemovedToggle");
+    if (rt) rt.addEventListener("click", function () {
+      var list = $("radarRemovedList");
+      if (!list) return;
+      list.hidden = !list.hidden;
+      if (!list.hidden) renderRemovedList();
+      rt.textContent = list.hidden ? "Show removed (" + state.removedParagraphs.length + ")" : "Hide removed";
+    });
 
     updateAiAvailability();
   }
