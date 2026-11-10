@@ -40,11 +40,27 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.2.0 release notes (local build — not yet pushed/released)
+
+**Auralis v1.2.0 — ElevenLabs-style voice menu, no robotic voices, radar strips UI chrome**
+
+- **Robotic voices removed completely:** device/browser `speechSynthesis` voices are no longer listed or used anywhere — no picker group, no fallback, no toggle. Only curated human-sounding AI voices appear: Microsoft Edge Read Aloud (free, no key) and the free Google voice, plus BYO-key premium voices. If both free transports fail, the app says so honestly (“try Microsoft Edge, or add a free ElevenLabs/Cartesia key”) instead of falling back to a robotic voice.
+- **ElevenLabs-style voice menu, language-first:** pick a language, then a voice card — never a 300-voice dropdown, never languages mixed. English shows 9 cards max (Aria ★ Recommended by default, Jenny, Guy, Emma, Christopher, Sonia, Ryan UK, Natasha, Google), each with a plain-language description, accent tag (US/UK/AU…), gender, use-case tag (Articles/Stories/News) and a Preview button. Spanish, French, German, Italian, Portuguese, Hebrew, Arabic, Hindi, Japanese and Chinese each show only their own curated Microsoft Natural voices (all names verified against Microsoft's live voice list, Nov 10, 2026). The three tiers are small labels above the cards. The Reader's voice select shows the same curated list for the current language.
+- **Radar strips UI-chrome words:** “click next”, “click here”, “read more”, “continue reading”, “next/previous page”, “subscribe”, “sign up”, “log in”, “share this”, “follow us”, “advertisement”, “sponsored”, “related articles”, “you may also like”, “back to top”, “skip to content”, “accept cookies”, pagination (“1 of 5”) and more are cut from the spoken text — whole blocks and chrome sentences inside real paragraphs — counted in the “removed M clutter blocks” tally and visible under “Show removed”. Only core paragraphs + title/author/date are ever spoken.
+- **Fix:** the old English list wrongly included `en-US-RyanNeural`, which isn't on Microsoft's Read Aloud list — removed; UK Ryan (`en-GB-RyanNeural`) is the Ryan on the menu.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.2.0
+git push origin v1.2.0
+gh release create v1.2.0 --title "v1.2.0 — ElevenLabs-style voice menu, no robotic voices" --notes-file /tmp/auralis-v1.2-release-notes.md
+```
+
 ### v1.1.0 release notes (local build — not yet pushed/released)
 
 **Auralis v1.1.0 — Free AI voices, Content Radar, Clone Studio**
 
-- **Free built-in AI voices, no key:** Microsoft AI voices (Edge Read Aloud) are now the default — Aria, Jenny, Guy and more Microsoft Natural voices, unlimited, no account. The free Google voice is the automatic fallback if Microsoft doesn't answer. Browser voices are still there as a third option, with robotic voices hidden as before.
+- **Free built-in AI voices, no key:** Microsoft AI voices (Edge Read Aloud) are now the default — Aria, Jenny, Guy and more Microsoft Natural voices, unlimited, no account. The free Google voice is the automatic fallback if Microsoft doesn't answer. (v1.2.0 removes device/browser voices entirely — they sounded robotic.)
 - **Content Radar:** every page/text/X thread is swept and only the core paragraphs are read aloud — nav, ads, related links, newsletters, comments and clutter are cut, with “Radar found N core paragraphs · removed M clutter blocks” and a “Show removed” toggle to restore any paragraph with one tap. Optional Hugging Face double-check (your free token, off by default, localStorage only).
 - **Cartesia Sonic** joins the premium providers (BYO key, free tier 20,000 credits/mo ≈ 27 min), alongside ElevenLabs, OpenAI, Azure and Google.
 - **Clone Studio:** clone a voice you own or have permission to use through ElevenLabs Instant Voice Clone or Cartesia, from a 30-second to 1-minute clean sample, with your own key. Honest note included: local cloning is unlimited but very slow (15–25× realtime), so the Microsoft voices are the fast unlimited option.

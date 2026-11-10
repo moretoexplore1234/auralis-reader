@@ -18,13 +18,13 @@ No account. No paywall. No server. Just open it and listen.
 | **Read long X posts & threads** | Paste an X / Twitter link (`x.com/…/status/…`). Long posts and whole threads are read aloud start to finish, with the author shown. |
 | **Honest about limits** | Paywalled, protected, deleted or bot-blocked pages are **never** bypassed. Auralis says so plainly and offers Paste Text instead. |
 | **Paste text & upload** | Paste any text, or upload `.txt`, `.md` or `.html` files. Nothing leaves your browser. |
-| **Free AI voices** | **Microsoft AI voices (Edge Read Aloud) are built in — Aria, Jenny, Guy and more, free and unlimited, no key, no account.** Your device's browser voices are the fallback. Every voice has a plain-language description and a Preview button. |
+| **Free AI voices** | **Microsoft AI voices (Edge Read Aloud) are built in — Aria, Jenny, Guy and more, free and unlimited, no key, no account.** The free Google voice is the automatic fallback if Microsoft doesn't answer. No device or browser voice is ever listed — they sounded robotic. Every voice is a card with a plain-language description, accent tag and a Preview button. |
 | **Word-by-word highlighting** | The words light up as they're spoken, with a progress bar and time remaining. Play / pause / stop / skip a sentence. |
 | **Premium voices (optional)** | Bring your own key for **ElevenLabs, Cartesia Sonic, OpenAI TTS, Azure Speech or Google Cloud TTS**. Test voice included. Keys live only in your browser. Free tiers: ElevenLabs ~10k chars/mo, Cartesia ~20k credits/mo. |
 | **Reader Mode** | One tap for a clean, distraction-free view — large text (A− / A+), Light / Sepia / Dark themes, narrow centred column. |
 | **Easy listening** | Sleep timer (15 / 30 / 60 min), skip back/forward 15 seconds, speed presets (Slow & clear / Normal / Fast), and a one-tap **Summarize this** button in the Reader. |
-| **Human voices only** | Robotic voices are hidden by default. Every voice shows a plain-language description (“warm, friendly American woman”) and a Preview button, with ★ Recommended on the top pick. |
-| **Content Radar** | Every page is swept like a radar: only the core paragraphs are read aloud — nav, ads, related links, newsletters, comments and clutter are cut. A “Show removed” toggle lets you see what was cut and restore any paragraph with one tap. An optional Hugging Face double-check (your free token, off by default) can confirm borderline paragraphs. |
+| **Voice menu** | Pick a language first, then a voice — language-first, ElevenLabs-style cards. English shows 9 voices max (Aria ★ Recommended, Jenny, Guy, Emma, Christopher, Sonia, Ryan UK, Natasha, Google). Other languages show only their own voices (Spanish, French, German, Italian, Portuguese, Hebrew, Arabic, Hindi, Japanese, Chinese). Never all languages mixed, never 300 voices. |
+| **Content Radar** | Every page is swept like a radar: only the core paragraphs are read aloud — nav, ads, related links, newsletters, comments, “click next”, “read more”, “subscribe”, “share this” and all other UI-chrome words are cut, never read aloud. A “Show removed” toggle lets you see what was cut and restore any paragraph with one tap. An optional Hugging Face double-check (your free token, off by default) can confirm borderline paragraphs. |
 | **Clone Studio** | Clone a voice you own or have permission to use — your own voice, or a voice you made — through ElevenLabs Instant Voice Clone or Cartesia, with your own key. 30 seconds to 1 minute of clean sample audio. |
 | **Personal AI apps** | Add **any AI that speaks the OpenAI format** — OpenAI, Groq, OpenRouter, Ollama, LM Studio, your own server. Ask it to summarise, explain like you're five, answer a question, or translate what you're reading. |
 | **Library** | Save articles with your place kept, resume later, delete anytime. Stored on your device only. |
@@ -60,7 +60,7 @@ Every version, with notes, lives at https://github.com/moretoexplore1234/auralis
 ### Tips
 
 - **Share a link straight into Auralis:** open `https://moretoexplore1234.github.io/auralis-reader/?url=<article-url>` and the article loads itself, ready to play. If your clipboard holds a link, Auralis offers to paste it with one tap.
-- **Best voices:** Microsoft AI voices (Aria, Jenny, Guy…) are the default and work in any modern browser — no key, no credits. Browser voices vary by device; some Android phones only offer robotic ones, which is why the Microsoft voices are the default.
+- **Best voices:** Microsoft AI voices (Aria, Jenny, Guy…) are the default and work in any modern browser — no key, no credits. Device browser voices are not offered at all — on some Android phones they only sound robotic, so Auralis doesn't list them.
 - **A page won't load?** Some sites block cross-site reading. Auralis tries several routes, then tells you honestly. Copy the article text and use **Paste text**.
 - **Paywalls & protected posts:** Auralis never bypasses a paywall or a login wall. If you have access, paste the text yourself.
 - **Long listens:** Auralis reads the whole thing — a 2,000-word article or a full X thread — in sentences, keeping your place and the highlighting going all the way through.
@@ -86,7 +86,6 @@ Import/export: **Export apps (JSON)** downloads your apps (including keys — ke
 | Hosting (GitHub Pages) | **$0** |
 | Microsoft AI voices (Edge Read Aloud) — unlimited, no key | **$0** |
 | Google free voice — unlimited, no key | **$0** |
-| Built-in voices (your browser) | **$0** |
 | Article & X-post reading | **$0** |
 | Library & settings (your browser) | **$0** |
 | Premium voices (ElevenLabs / Cartesia / OpenAI / Azure / Google) — optional, your key | Pay your provider only ($0 on the ElevenLabs & Cartesia free tiers) |
@@ -102,7 +101,7 @@ There is no backend, no database, no analytics, no tracking, and no code that ph
 
 ## Known limits
 
-- Voice quality varies by browser and device; some browsers only offer a few voices.
+- Voice quality depends on your connection and browser; Microsoft's voices work best in Edge and fall back to the free Google voice elsewhere.
 - Sites with strong bot protection or paywalls can't be read by URL — use Paste Text.
 - Local AI apps (Ollama / LM Studio) need to allow browser connections and the page served over `http(s)`, not `file://`.
 - Word highlighting follows the speech closely, with a timing fallback where the browser doesn't report word boundaries — sync is close, not frame-perfect.

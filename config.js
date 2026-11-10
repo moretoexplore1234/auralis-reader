@@ -16,7 +16,7 @@ window.AURALIS_CONFIG = {
     preferredNames: [
       "Microsoft Aria", "Microsoft Jenny", "Microsoft Guy",
       "Google US English", "Samantha", "Alex", "Daniel",
-      "Microsoft Zira", "Google UK English Female"
+      "Google UK English Female"
     ]
   },
 

@@ -207,7 +207,6 @@
           <thead><tr><th>Thing</th><th>Provider</th><th>Cost</th></tr></thead>
           <tbody>
             <tr><td>Hosting (GitHub Pages)</td><td>GitHub</td><td>$0</td></tr>
-            <tr><td>Built-in voices (Web Speech API)</td><td>Your browser / OS</td><td>$0</td></tr>
             <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
             <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
             <tr><td>Microsoft AI voices (Edge Read Aloud)</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
@@ -283,27 +282,43 @@
         <p class="eyebrow">Voices</p>
         <h2>Free AI voices now. Studio voices if you want them.</h2>
         <p>Microsoft AI voices are free, unlimited and already the default — no key, no credits, no account. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
-        <div class="tier-grid" aria-label="Voice tiers">
-          <div class="tier-card tier-free"><strong>Unlimited &amp; free</strong><span>Microsoft AI voices (Edge Read Aloud) — no key, no credits. The default.</span></div>
-          <div class="tier-card"><strong>Free monthly credits</strong><span>ElevenLabs 10k/mo · Cartesia 20k/mo — your free key.</span></div>
-          <div class="tier-card"><strong>Your key, pay your provider</strong><span>OpenAI · Azure · Google Cloud.</span></div>
+        <div class="tier-strip" aria-label="Voice tiers">
+          <span class="tier-chip tier-free">★ Unlimited &amp; free — Microsoft AI voices, no key</span>
+          <span class="tier-chip">Free monthly credits — ElevenLabs 10k/mo · Cartesia 20k/mo</span>
+          <span class="tier-chip">Your key, pay your provider — OpenAI · Azure · Google Cloud</span>
         </div>
         <p class="muted" style="margin-top:10px">Watching: Block's Dessa (not publicly available yet — on the waitlist).</p>
-        <label class="check-inline human-toggle"><input type="checkbox" id="humanOnlyToggle" checked> Human-sounding voices only <span class="muted">(hides robotic voices)</span></label>
       </div>
-      <div class="grid-2">
-        <div class="card">
-          <span class="pill free">Free · Built in</span>
-          <h3 style="margin-top:10px">AI &amp; browser voices</h3>
-          <p>Microsoft AI voices are free, unlimited and already the default. Tap any voice to hear a preview — or pick a browser voice from your device below.</p>
-          <div class="voice-list" id="voiceList"><p class="muted">Loading voices… If this stays empty, your browser may not expose speech voices — try Chrome, Edge or Safari.</p></div>
+      <div class="voice-picker">
+        <div class="voice-lang-row">
+          <label for="voiceLangSelect">Language</label>
+          <select id="voiceLangSelect" aria-label="Voice language">
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="it">Italian</option>
+            <option value="pt">Portuguese</option>
+            <option value="he">Hebrew</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+            <option value="ja">Japanese</option>
+            <option value="zh">Chinese (Mandarin)</option>
+          </select>
+          <span class="muted">Only voices in this language are shown — pick one in seconds. Tap a card to hear a preview or use it.</span>
         </div>
-        <div class="card">
+        <div class="voice-cards" id="voiceCards"></div>
+        <div class="voice-warn" id="voiceEmptyState" hidden>
+          <strong>No human-sounding voice is answering in this browser right now.</strong>
+          <p>Try Microsoft Edge, or add a free ElevenLabs or Cartesia key below. Auralis never falls back to a robotic device voice.</p>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
           <span class="pill byo">Optional · Bring your own key</span>
           <h3 style="margin-top:10px">Premium voice provider</h3>
           <p>Choose a provider, paste your key, test it. Auralis uses it only for narration you start.</p>
           <div class="provider-grid" role="group" aria-label="Premium voice provider">
-            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Browser voice</strong><span>Free · default · natural voices first</span></button>
+            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Free AI voices</strong><span>Free · default · Microsoft AI voices</span></button>
             <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most lifelike · uses your ElevenLabs credits</span></button>
             <button type="button" class="provider-card" data-provider="cartesia" aria-pressed="false"><strong>Cartesia Sonic</strong><span>Closest rival to ElevenLabs · free 20k credits/mo</span></button>
             <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Smooth studio voices · your key</span></button>
@@ -313,7 +328,6 @@
           </div>
           <div id="providerForm" style="margin-top:16px"></div>
         </div>
-      </div>
       <div class="card clone-studio" id="cloneStudio" style="margin-top:16px">
         <span class="pill byo">Optional · Bring your own key</span>
         <h3 style="margin-top:10px">Clone Studio</h3>
