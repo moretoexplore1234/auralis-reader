@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.0";
+  var APP_VERSION = "v1.4.1";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -371,10 +371,30 @@
       state.clutterRemoved = (clutterRemoved || 0) + state.removedParagraphs.length;
       keptText = strip.kept.map(function (p) { return p.text; }).join("\n\n");
       if (!keptText.trim()) {
-        showStatus("error", "Nothing readable left",
-          "The Content Radar cut everything on this page — it looked like navigation and buttons, not an article. Try <strong>Paste text</strong> with the article text instead.",
-          "Paste text instead", openPasteModal);
-        return;
+        // Never wipe the reader entirely (v1.4.1): if the radar +
+        // chrome strip cut everything, fall back to the original
+        // paragraphs cleaned of timestamps/URLs only. A pasted note
+        // that opens with a dateline is still an article — the
+        // reader must never answer real text with "nothing left".
+        var fbTexts = [], fbRemoved = [], fbIndices = [];
+        paras.forEach(function (p, pi) {
+          var c = cleanSpokenText(p);
+          if (c.text.trim()) { fbTexts.push(c.text); fbIndices.push(pi); }
+          c.removed.forEach(function (r) { fbRemoved.push({ text: r, index: pi, score: 0, chrome: true }); });
+        });
+        if (fbTexts.length) {
+          keptText = fbTexts.join("\n\n");
+          state.removedParagraphs = fbRemoved;
+          state.radarKeptIndices = fbIndices;
+          state.radarKept = fbTexts.length;
+          state.radarRemoved = fbRemoved.length;
+          state.clutterRemoved = (clutterRemoved || 0) + fbRemoved.length;
+        } else {
+          showStatus("error", "Nothing readable left",
+            "The Content Radar cut everything on this page — it looked like navigation and buttons, not an article. Try <strong>Paste text</strong> with the article text instead.",
+            "Paste text instead", openPasteModal);
+          return;
+        }
       }
       buildModel(title, source, byline, keptText);
       renderRadarResult();
@@ -534,16 +554,25 @@
     if (words >= 25) score += 30; else if (words >= 12) score += 18; else if (words >= 6) score += 6;
     if (sentences >= 2) score += 20; else if (sentences === 1) score += 8;
     if (/[.!?]["'\u201d)]?\s*$/.test(text)) score += 10; // ends like a real sentence
-    if (RADAR_BOILERPLATE.test(text)) score -= 60;
-    if (CLUTTER_PARA_RE.test(text)) score -= 60;
-    if (TIMESTAMP_ONLY_RE.test(text)) score -= 60; // a line that is only a date/time
-    if (/^\s*by\s+\S/i.test(text) && !/[.!?]\s+\S/.test(text)) score -= 60; // byline line
-    if (/^\s*(published|updated|posted|last updated)\b/i.test(text)) score -= 60; // dateline
-    if (/^(photo|image|picture|illustration|credit)\s*:/i.test(text)) score -= 60; // caption
-    if (/^about the (author|writer)\b|^author bio\b/i.test(text)) score -= 60; // author bio
-    if (/^\s*\d+\s*(of|\/)\s*\d+\s*$/.test(text)) score -= 60; // "1 of 5" pagination
-    if (/^\s*\d+\s*$/.test(text)) score -= 60; // bare page number
-    if (isX && /^(show this thread|promoted)\b/i.test(text)) score -= 60;
+    // Metadata penalties only bite short fragments. A long paragraph
+    // with several real sentences is an article that happens to open
+    // with a dateline ("Published Nov 13, 2026…") — the timestamps
+    // are stripped later by cleanSpokenText, so the paragraph must
+    // not be scored as if it were only its dateline (v1.4.1: a
+    // single-block paste starting with "Published" was wiped whole).
+    var substantive = words >= 25 && sentences >= 2;
+    if (!substantive) {
+      if (RADAR_BOILERPLATE.test(text)) score -= 60;
+      if (CLUTTER_PARA_RE.test(text)) score -= 60;
+      if (TIMESTAMP_ONLY_RE.test(text)) score -= 60; // a line that is only a date/time
+      if (/^\s*by\s+\S/i.test(text) && !/[.!?]\s+\S/.test(text)) score -= 60; // byline line
+      if (/^\s*(published|updated|posted|last updated)\b/i.test(text)) score -= 60; // dateline
+      if (/^(photo|image|picture|illustration|credit)\s*:/i.test(text)) score -= 60; // caption
+      if (/^about the (author|writer)\b|^author bio\b/i.test(text)) score -= 60; // author bio
+      if (/^\s*\d+\s*(of|\/)\s*\d+\s*$/.test(text)) score -= 60; // "1 of 5" pagination
+      if (/^\s*\d+\s*$/.test(text)) score -= 60; // bare page number
+      if (isX && /^(show this thread|promoted)\b/i.test(text)) score -= 60;
+    }
     if ((p.linkDensity || 0) > 0.5) score -= 35; else if ((p.linkDensity || 0) > 0.3) score -= 15;
     // X posts are short by nature — don't punish brevity.
     if (isX && words >= 4) score += 10;
@@ -569,9 +598,9 @@
     /^follow (us|me)\b/i,
     /^advertisement\.?$/i,
     /^sponsored(\s+(content|by))?\.?$/i,
-    /^related articles?\.?$/i,
-    /^you may also like\.?$/i,
-    /^recommended( for you)?\.?$/i,
+    /^related articles?\b/i,
+    /^you may also like\b/i,
+    /^recommended( for you)?\b/i,
     /^back to top\.?$/i,
     /^skip to (content|main content)\.?$/i,
     /^accept cookies?\.?$/i,
@@ -642,12 +671,16 @@
   // UI-chrome clauses, wherever they sit inside a sentence. Each match
   // is capped (~40 chars, stops at punctuation) so real content after
   // the chrome phrase is never eaten.
+  // Tails stop at a dash (— – -) as well as at punctuation: a chrome
+  // clause before a dash ("Read more at www.x.example — the meeting
+  // starts at 3 PM…") must never eat the real sentence after the
+  // dash (v1.4.1).
   var INLINE_CHROME_RES = [
-    /[,;]?\s*(and\s+)?(click|tap|press)\s+(here|next|to continue|below|above|for (more|details))\b[^.!?,;]{0,40}/gi,
-    /[,;]?\s*read more\b[^.!?,;]{0,30}/gi,
-    /[,;]?\s*continue reading\b[^.!?,;]{0,30}/gi,
-    /[,;]?\s*subscribe( to (our )?(newsletter|updates))?\b[^.!?,;]{0,30}/gi,
-    /[,;]?\s*share this( article| post| story)?\b[^.!?,;]{0,30}/gi
+    /[,;]?\s*(and\s+)?(click|tap|press)\s+(here|next|to continue|below|above|for (more|details))\b[^.!?,;—–-]{0,40}/gi,
+    /[,;]?\s*read more\b[^.!?,;—–-]{0,30}/gi,
+    /[,;]?\s*continue reading\b[^.!?,;—–-]{0,30}/gi,
+    /[,;]?\s*subscribe( to (our )?(newsletter|updates))?\b[^.!?,;—–-]{0,30}/gi,
+    /[,;]?\s*share this( article| post| story)?\b[^.!?,;—–-]{0,30}/gi
   ];
   function cleanSpokenText(text) {
     var removed = [];
@@ -672,14 +705,19 @@
     // unless punctuation follows, so "Updated guidance says…" is
     // never touched.
     var PUB_RE = new RegExp("(^|[.!?]\\s+)(?:Published|Updated|Posted|Last updated)\\s*:?\\s*(?:on\\s+)?(?:(?:" + DATE_RE + "(?:\\s+at\\s+" + TIME_RE + ")?|" + TIME_RE + "|" + AGO_RE + ")\\s*[.!?]?\\s*|[.!?]+\\s*)", "gi");
-    t = t.replace(PUB_RE, function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; });
+    // Repeat until stable: one global pass eats the ". " boundary the
+    // next label needs, so "Updated 2:14 PM." survived after
+    // "Published … 3:27 PM." was cut (v1.4.1). Each pass shortens
+    // the string, so the loop always terminates.
+    var prevT;
+    do { prevT = t; t = t.replace(PUB_RE, function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
     // "5 min read", "· 3 min read"
     cut(/·?\s*\b\d+\s*(?:min|mins|minute|minutes)\s+read\b/gi);
     // "2 hours ago", "3 days ago"
     cut(new RegExp("\\b" + AGO_RE + "\\b", "gi"));
     // A date or time opening a sentence and followed by a dash
     // ("November 13, 2026 — the council met."): the dateline goes.
-    t = t.replace(new RegExp("(^|[.!?]\\s+)(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + ")\\s*[—–-]\\s*", "gi"), function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; });
+    do { prevT = t; t = t.replace(new RegExp("(^|[.!?]\\s+)(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + ")\\s*[—–-]\\s*", "gi"), function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
     cut(SPOKEN_URL_RE);
     cut(SPOKEN_WWW_RE);
     cut(SPOKEN_EMAIL_RE);
@@ -691,7 +729,15 @@
       // Drop a dangling preposition/conjunction left behind by a cut.
       var s2 = s.replace(/\s+(at|to|on|in|for|and|or|with|from|of|by)\s*([.!?]|$)/gi, "$2").trim();
       s2 = s2.replace(/[ \t]{2,}/g, " ").trim();
+      // A leading dash left behind when a chrome clause before it was
+      // cut ("Read more — the meeting starts…").
+      s2 = s2.replace(/^[—–-]\s*/, "").trim();
       if (!s2) { dropped.push(s); return; }
+      // A fragment with no letters at all is stray punctuation left
+      // by a cut (a lone "." after "5 min read." was removed).
+      if (!/[A-Za-z]/.test(s2)) { dropped.push(s2); return; }
+      // A byline sentence inside a pasted block ("By Jane Doe.").
+      if (/^by\s+[A-Z][^.!,;?]{0,50}\.?$/i.test(s2)) { dropped.push(s2); return; }
       // A sentence that IS only a date or a time is metadata — drop
       // it. (Substance times survive: "the meeting starts at 3 PM"
       // is a real sentence, not a timestamp line.)
@@ -1539,8 +1585,19 @@
     loading: null,       // in-flight load promise
     failed: false,       // load failed — do not retry silently
     failReason: "",
-    deviceTriedWasm: false
+    deviceTriedWasm: false, // the WASM fallback load was already tried
+    preferredDevice: null   // "webgpu" | "wasm" — once WASM wins, stay on it
   };
+  // A raw onnxruntime/WebGPU error ("[webgpu] Error: Failed to get
+  // GPU adapter…") means nothing to a visitor. Translate it to plain
+  // language; anything else passes through (capped).
+  function plainKokoroError(err) {
+    var m = String((err && err.message) || err || "");
+    if (/webgpu|gpu adapter|get gpu|onnxruntime|onnx runtime|device.*not.*(found|available)/i.test(m)) {
+      return "The on-device voice model couldn't load in this browser.";
+    }
+    return m ? m.slice(0, 160) : "The on-device voice model could not be downloaded.";
+  }
   function kokoroLoadText() { return $("kokoroLoadText"); }
   function kokoroLoadFill() { return $("kokoroLoadFill"); }
   function kokoroLoadBox() { return $("kokoroLoadBox"); }
@@ -1576,26 +1633,24 @@
       kokoro.tts = window.__AURALIS_KOKORO_MOCK;
       return Promise.resolve(kokoro.tts);
     }
-    if (typeof window === "undefined" || typeof window.fetch === "undefined") {
-      // No fetch (very old browser / odd runtime): the model cannot be
-      // downloaded at all. Mark the failure like any other load
-      // failure, so the honest empty state shows — a rejected promise
-      // alone would leave the voice list looking usable.
-      kokoroFail("This browser can't download the on-device voice model.");
-      return Promise.reject(new Error(kokoro.failReason));
-    }
     var firstTime = !storeGet("auralis.kokoro.seen", false);
     showKokoroLoading(firstTime
       ? "First play downloads the voice model once (~90MB) — then it works offline, even on a plane. Best on Wi-Fi…"
       : "Loading the on-device voices…", 0);
-    var device = (typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm";
-    kokoro.loading = (function loadWith(deviceName) {
+    // WebGPU first when the browser advertises it — but "advertises"
+    // is not "works": headless Chrome has navigator.gpu yet its
+    // requestAdapter() returns nothing, so from_pretrained fails
+    // with "Failed to get GPU adapter" (v1.4.0). The WASM fallback
+    // must then be TRIED, not just noted — the old code never did.
+    var firstDevice = kokoro.preferredDevice || ((typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm");
+    function attempt(deviceName) {
       // Promise.resolve().then() so even a synchronous import() throw
       // (odd runtimes) becomes a rejection the .catch below handles.
-      return Promise.resolve().then(function () { return import(KOKORO_CDN); }).then(function (mod) {
-        var KokoroTTS = mod.KokoroTTS;
-        if (!KokoroTTS) throw new Error("The voice library did not load.");
-        return KokoroTTS.from_pretrained(KOKORO_MODEL, {
+      // Test seam: if the harness sets window.__AURALIS_KOKORO_LOADER,
+      // it replaces the CDN import + from_pretrained step, so QA can
+      // simulate a WebGPU failure followed by a WASM success.
+      return Promise.resolve().then(function () {
+        var opts = {
           dtype: "q8",
           device: deviceName,
           progress_callback: function (p) {
@@ -1609,9 +1664,33 @@
             if (onProgress) onProgress({ label: label, pct: pct });
             showKokoroLoading(label, pct);
           }
+        };
+        if (typeof window !== "undefined" && typeof window.__AURALIS_KOKORO_LOADER === "function") {
+          return window.__AURALIS_KOKORO_LOADER(KOKORO_MODEL, opts);
+        }
+        // No fetch (very old browser / odd runtime): the model cannot
+        // be downloaded at all. The final .catch below routes this
+        // through kokoroFail like any other load failure, so the
+        // honest empty state shows.
+        if (typeof window === "undefined" || typeof window.fetch === "undefined") {
+          throw new Error("This browser can't download the on-device voice model.");
+        }
+        return import(KOKORO_CDN).then(function (mod) {
+          var KokoroTTS = mod.KokoroTTS;
+          if (!KokoroTTS) throw new Error("The voice library did not load.");
+          return KokoroTTS.from_pretrained(KOKORO_MODEL, opts);
         });
       });
-    })(device).then(function (tts) {
+    }
+    kokoro.loading = attempt(firstDevice).catch(function (err) {
+      if (firstDevice === "webgpu" && !kokoro.deviceTriedWasm) {
+        kokoro.deviceTriedWasm = true;
+        kokoro.preferredDevice = "wasm";
+        showKokoroLoading("The fast voice engine isn't available here — trying the standard engine…", 0);
+        return attempt("wasm");
+      }
+      throw err;
+    }).then(function (tts) {
       kokoro.tts = tts;
       kokoro.loading = null;
       storeSet("auralis.kokoro.seen", true);
@@ -1619,7 +1698,7 @@
       return tts;
     }).catch(function (err) {
       kokoro.loading = null;
-      kokoroFail((err && err.message) || "The on-device voice model could not be downloaded.");
+      kokoroFail(plainKokoroError(err));
       throw new Error(kokoro.failReason);
     });
     return kokoro.loading;
@@ -1674,6 +1753,7 @@
         if (out) return { blob: float32ToWavBlob(out.samples, out.sampleRate), durationSec: out.samples.length / out.sampleRate, samples: out.samples, sampleRate: out.sampleRate };
         if (!kokoro.deviceTriedWasm) {
           kokoro.deviceTriedWasm = true;
+          kokoro.preferredDevice = "wasm";
           kokoro.tts = null;
           return ensureKokoro().then(function (tts2) {
             return tts2.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed });
@@ -1775,8 +1855,16 @@
       highlightSentence(idx);
       updateProgress();
       state.freeAudio = null;
+      // While the on-device model is still loading (first play), the
+      // Play button says so right where the visitor is looking —
+      // v1.4.0 showed "Pause" + a frozen 7% for 30s with no sign
+      // anything was happening. Restored to Pause when audio arrives.
+      if (currentVoiceChoice().engine === "kokoro" && !kokoro.tts && !kokoro.failed) {
+        setPlayButtonLabel("⏳ Loading voices…");
+      }
       freeFetchAudio(s.text).then(function (audio) {
         if (!state.playing || state.engine !== "free") return;
+        setPlayButton(true);
         state.freeAudio = audio;
         freeWordTimer(s, audio._durMs);
         audio.onended = function () { idx++; next(); };
@@ -1814,7 +1902,7 @@
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function (err) {
-      toast("Couldn't load the on-device voices (" + (err && err.message ? err.message : "download failed") + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
+      toast("Couldn't load the on-device voices (" + plainKokoroError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
     });
   }
   function previewFreeVoice(entry, engine) {
@@ -1826,6 +1914,10 @@
     var label = playing ? "⏸ Pause" : "▶ Play";
     var b = $("playPauseBtn"); if (b) b.textContent = label;
     var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = label;
+  }
+  function setPlayButtonLabel(text) {
+    var b = $("playPauseBtn"); if (b) b.textContent = text;
+    var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = text;
   }
   function syncBottomBar() {
     var nameEl = $("bottomVoiceName");
@@ -2117,7 +2209,7 @@
         state.downloading = false;
         hideDownloadProgress();
         updateDownloadLabel();
-        toast("Couldn't render the audio file (" + (err && err.message ? err.message : "render failed") + "). Try again, or switch to the free on-device voice.");
+        toast("Couldn't render the audio file (" + plainKokoroError(err) + "). Try again, or switch to the free on-device voice.");
       });
     }
     function finishDownload() {
@@ -2203,8 +2295,8 @@
   ];
   var PROVIDER_META = {
     none: { label: "Free AI voices", fields: [] },
-    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free Microsoft AI voices above are unlimited with no key at all." },
-    cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free Microsoft AI voices above are unlimited with no key at all." },
+    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free voices above (Kokoro on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
+    cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free voices above (Kokoro on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
     openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
     azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
     google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
@@ -2229,7 +2321,9 @@
       card.setAttribute("aria-pressed", active ? "true" : "false");
     });
     if (!c.provider || c.provider === "none") {
-      host.appendChild(el("p", "muted", "Using the free Microsoft AI voices. Nothing to configure — press play and listen."));
+      host.appendChild(el("p", "muted", isEdgeBrowser()
+        ? "Using the free Microsoft AI voices. Nothing to configure — press play and listen."
+        : "Using the free Kokoro AI voices, running on your device. Nothing to configure — press play and listen."));
       return;
     }
     var meta = PROVIDER_META[c.provider];
@@ -2413,7 +2507,7 @@
       var next = premiumCfg(); next.key = ""; next.provider = "none"; next.voiceId = ""; next.model = ""; next.region = ""; next.baseUrl = "";
       storeSet(LS.premium, next);
       renderProviderForm();
-      toast("Premium provider removed — back to the free Microsoft AI voices.");
+      toast("Premium provider removed — back to the free voices.");
     });
     row.appendChild(save); row.appendChild(setDefault); row.appendChild(test); row.appendChild(clear);
     form.appendChild(row);

@@ -40,6 +40,27 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.1 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.1 — fixes the four failures the v1.4.0 real-browser check found**
+
+Why: v1.4.0 shipped (commit 27640b7, Release live) but its real-browser check on cloud Chrome FAILED it, so it was never called ready: (1) pasting a short note wiped it entirely ("Nothing readable left"); (2) first Play failed after ~30s with no model-download progress and no audio; (3) Download audio failed with a raw WebGPU error and no file; (4) stale "Using the free Microsoft AI voices" copy in Chrome plus progress bars stuck on screen. This release fixes all four, at the root cause:
+
+- **Pasted text can never be wiped:** Content Radar metadata penalties (dateline/byline/timestamp/boilerplate) now only bite short fragments — a long paragraph with several real sentences is an article that happens to open with a dateline, not a dateline. And if the radar + chrome strip would still cut everything, the reader falls back to the original paragraphs cleaned of timestamps/URLs only. The browser-checker's exact pasted text now reads as "the meeting starts at 3 PM and the park opens at dawn. The city council voted to plant two hundred new trees…" with every timestamp, URL, byline and "Related articles" line gone.
+- **Timestamp stripping fixed for single-block pastes:** the Published/Updated regex ran once and ate the ". " boundary the next label needed, so "Updated 2:14 PM." survived; it now repeats until stable. Inline-chrome tails ("read more", "click here"…) stop at a dash, so "Read more at www.x.example — the meeting starts at 3 PM…" keeps the sentence after the dash. Byline sentences ("By Jane Doe.") and "Related articles: see below." are dropped at sentence level; stray punctuation fragments left by cuts are dropped too.
+- **Kokoro WASM fallback actually engages:** headless Chrome advertises `navigator.gpu` but its `requestAdapter()` returns nothing, so the WebGPU load failed and the old code never retried — the retry flag was set but the loader never consulted it. Now a WebGPU load failure retries once on WASM (and stays on WASM afterwards), with a plain-language loading label ("The fast voice engine isn't available here — trying the standard engine…"). Raw WebGPU/onnx errors are never shown to the visitor — anywhere (load, preview, download toasts) they read as "The on-device voice model couldn't load in this browser."
+- **Live load progress, where the visitor looks:** the Play button reads "⏳ Loading voices…" while the model loads (it used to show "Pause" + a frozen 7% for 30s), and the model-download box shows the live label and percentage ("Downloading the voice model once (~90MB) — model.onnx… 42%").
+- **Stuck bars fixed at the root cause:** CSS `display: flex` on `.radar-sweep`, `.kokoro-load` and `.download-progress` overrode the `hidden` attribute, so all three boxes were permanently visible. Each now has a `[hidden] { display: none; }` rule, like the rest of the app.
+- **Stale copy fixed:** the provider form, ElevenLabs/Cartesia free notes and the provider-removed toast name the engine that actually plays in this browser (Kokoro on your device outside Edge, Microsoft AI voices in Edge). README's "Best voices" line corrected the same way (it wrongly said Microsoft voices "work in any modern browser").
+- **Service worker:** cache bumped to `auralis-v1.4.1`. Footer shows `v1.4.1`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.1
+git push origin v1.4.1
+gh release create v1.4.1 --title "v1.4.1 — pasted text survives, WASM fallback works, live load progress" --notes-file /tmp/auralis-v1.4.1-release-notes.md
+```
+
 ### v1.4.0 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.0 — Kokoro voices on your device, no timestamps, download the article as audio**

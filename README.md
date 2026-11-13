@@ -61,7 +61,7 @@ Every version, with notes, lives at https://github.com/moretoexplore1234/auralis
 ### Tips
 
 - **Share a link straight into Auralis:** open `https://moretoexplore1234.github.io/auralis-reader/?url=<article-url>` and the article loads itself, ready to play. If your clipboard holds a link, Auralis offers to paste it with one tap.
-- **Best voices:** Microsoft AI voices (Aria, Jenny, Guy…) are the default and work in any modern browser — no key, no credits. Device browser voices are not offered at all — on some Android phones they only sound robotic, so Auralis doesn't list them.
+- **Best voices:** Kokoro AI voices (Heart, Sarah, Bella…) run on your device and are the default in any modern browser — no key, no credits. In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the default instead. Device browser voices are not offered at all — on some Android phones they only sound robotic, so Auralis doesn't list them.
 - **A page won't load?** Some sites block cross-site reading. Auralis tries several routes, then tells you honestly. Copy the article text and use **Paste text**.
 - **Paywalls & protected posts:** Auralis never bypasses a paywall or a login wall. If you have access, paste the text yourself.
 - **Long listens:** Auralis reads the whole thing — a 2,000-word article or a full X thread — in sentences, keeping your place and the highlighting going all the way through.
