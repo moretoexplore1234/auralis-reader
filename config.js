@@ -13,10 +13,10 @@ window.AURALIS_CONFIG = {
     rate: 1.0,
     pitch: 1.0,
     // Preferred voice name fragments, in order. First match wins.
+    // Microsoft AI voices only — device/browser voice names (Google US
+    // English, Samantha, Alex, Daniel…) sounded robotic and are gone.
     preferredNames: [
-      "Microsoft Aria", "Microsoft Jenny", "Microsoft Guy",
-      "Google US English", "Samantha", "Alex", "Daniel",
-      "Google UK English Female"
+      "Microsoft Aria", "Microsoft Jenny", "Microsoft Guy"
     ]
   },
 

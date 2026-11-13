@@ -40,6 +40,28 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.3.0 release notes (local build — not yet pushed/released)
+
+**Auralis v1.3.0 — no silent fallback, no links read aloud, voices you can actually choose**
+
+Why: v1.2.0 did NOT fix the voice problem in practice. A real-browser repro on the live site (cloud Chrome, Nov 13, 2026) confirmed the labels switched fine but playback was identical for every voice — Play jumped 0→100% instantly with a "Finished" toast and no audio — because the Edge WebSocket failed and the app silently fell back to the single Google voice, and audio errors advanced sentences to fake a finish. Links were still read aloud (only t.co was stripped). This release fixes the root causes:
+
+- **No silent fallback, ever:** when Microsoft Edge fails, the app says so LOUDLY (persistent banner + toast: "Microsoft voices aren't answering in this browser — you're hearing the single free Google voice…") and DISABLES the Microsoft voice cards (greyed, "Unavailable in this browser"). An on-load handshake probe detects this before the visitor picks. A "Retry Microsoft voices" button re-probes.
+- **Google removed as a choice:** no Google voice card, no Google dropdown option. Google TTS remains ONLY as an unlisted last-resort playback engine, and only while the banner is showing. Every selectable voice is a human-sounding Microsoft AI voice.
+- **Playback errors never fake "Finished":** a failed sentence stops playback with a loud "Playback failed — [reason]. Tap Play to retry." and a persistent line under the progress bar, staying on that sentence. Stop resets progress to 0%; Play after finishing restarts from the top.
+- **Preview fixed:** the voice card is no longer itself a clickable button (a nested clickable card could swallow Preview taps) — only the two buttons act, with their own z-index; the floating Follow button is sticky inside the reader card so it can never cover the voice cards. Preview uses the same loud Edge-failure handling as playback — no silent Google preview.
+- **Voice cards visible by default:** the Voices section is no longer hidden behind "More". Reader dropdown stays in sync.
+- **Every card has a "Best for:" line** in its description (not just a tag) — e.g. Aria "Best for: articles and news", Jenny "Best for: stories and audiobooks", Guy "Best for: long articles and narration" — ElevenLabs-style, so a real user can decide. All 43 voices across 11 languages carry one.
+- **URLs never spoken:** all raw URLs, `www.…` links, bare domains and email addresses are stripped from the spoken text (markdown links keep their text), plus mid-sentence UI-chrome clauses ("…and click next to continue") and link-pointer sentences ("Read the full story"). Applied to URLs, pasted text, uploads and X posts. Cut URLs count in the clutter tally. What you see is what is spoken.
+- **Service worker:** cache bumped to `auralis-v1.3.0`, app shell (index.html/app.js/config.js/styles.css) is NETWORK-FIRST so returning users always get the new code. Footer shows a visible version stamp (`v1.3.0`).
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.3.0
+git push origin v1.3.0
+gh release create v1.3.0 --title "v1.3.0 — no silent fallback, no links read aloud" --notes-file /tmp/auralis-v1.3-release-notes.md
+```
+
 ### v1.2.0 release notes (local build — not yet pushed/released)
 
 **Auralis v1.2.0 — ElevenLabs-style voice menu, no robotic voices, radar strips UI chrome**

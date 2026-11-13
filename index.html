@@ -67,7 +67,7 @@
         <button class="btn btn-ghost" type="button" id="surpriseBtn">✦ Try a sample</button>
         <button class="btn btn-ghost" type="button" id="moreBtn" aria-expanded="false">＋ More</button>
       </div>
-      <p class="hero-note">Three choices: listen to a link, paste text, or try a sample. Everything else — your Library, voices, AI apps and downloads — is one tap away under <strong>More</strong>.</p>
+      <p class="hero-note">Three choices: listen to a link, paste text, or try a sample. Voices are just below — pick a language, then a voice. Everything else — your Library, AI apps and downloads — is one tap away under <strong>More</strong>.</p>
       <p class="hero-note">Works with public pages. <strong>Paywalled or blocked pages can't be read</strong> — we'll say so honestly and offer paste-text instead. No login, no tracking.</p>
 
       <div class="status" id="statusBox" aria-live="polite" hidden></div>
@@ -104,6 +104,7 @@
           <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
           <div class="progress-labels"><span id="progressText">0% read</span><span id="timeRemaining">— remaining</span></div>
         </div>
+        <p class="playback-error" id="playbackError" role="alert" hidden></p>
 
         <div class="reader-mode-bar" id="readerModeBar" hidden>
           <span class="reader-mode-label">Reader mode</span>
@@ -210,7 +211,7 @@
             <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
             <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
             <tr><td>Microsoft AI voices (Edge Read Aloud)</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
-            <tr><td>Google free voice</td><td>Google</td><td>$0 · unlimited, no key</td></tr>
+            <tr><td>Google TTS fallback — last resort only, not a voice choice</td><td>Google</td><td>$0 · single voice</td></tr>
             <tr><td>ElevenLabs (10k chars/mo) / Cartesia (20k credits/mo)</td><td>Optional, your free key</td><td>$0 on the free tier</td></tr>
             <tr><td>OpenAI / Azure / Google Cloud voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
           </tbody>
@@ -275,8 +276,9 @@
     </div>
   </section>
 
-  <!-- VOICES -->
-  <section class="panel more-section" id="voices">
+  <!-- VOICES — always visible, never behind "More": picking a voice
+       is the first thing most visitors do. -->
+  <section class="panel" id="voices">
     <div class="wrap">
       <div class="panel-head">
         <p class="eyebrow">Voices</p>
@@ -290,6 +292,11 @@
         <p class="muted" style="margin-top:10px">Watching: Block's Dessa (not publicly available yet — on the waitlist).</p>
       </div>
       <div class="voice-picker">
+        <div class="voice-warn edge-down-banner" id="edgeDownBanner" hidden>
+          <strong>Microsoft voices aren't answering in this browser.</strong>
+          <p>You're hearing the single free Google voice instead — that's why every voice sounds the same. For the real Microsoft voices (Aria, Jenny, Guy…), open this page in <strong>Microsoft Edge</strong>, or add a free ElevenLabs or Cartesia key below. The Microsoft voice cards are greyed out until they can play.</p>
+          <button class="btn btn-gold btn-small" type="button" id="edgeRetryBtn">↻ Retry Microsoft voices</button>
+        </div>
         <div class="voice-lang-row">
           <label for="voiceLangSelect">Language</label>
           <select id="voiceLangSelect" aria-label="Voice language">
@@ -423,7 +430,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License</span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.3.0</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>

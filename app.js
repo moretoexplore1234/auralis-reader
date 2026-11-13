@@ -8,6 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
+  var APP_VERSION = "v1.3.0";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -142,7 +143,10 @@
     freeTimer: null,
     freeTransport: null,   // "edge" | "google" — decided on first play, per session
     edgeFailed: false,
+    edgeDown: false,       // Microsoft voices proven unavailable in this browser — cards disabled, banner shown
+    edgeProbed: false,     // the on-load Edge handshake probe has run once
     googleFailed: false,
+    finished: false,       // the current article actually played to the end
     removedParagraphs: [], // paragraphs the Content Radar cut (restorable)
     radarKeptIndices: [],  // original paragraph index of each kept paragraph
     radarKept: 0,
@@ -578,14 +582,73 @@
     var out = [], chromeRemoved = [];
     kept.forEach(function (p) {
       var r = stripUiChrome(p.text);
-      if (!r.text) {
+      // URLs are never spoken: strip every raw URL, bare domain and
+      // email address, and drop sentences that only point at a link.
+      var c = cleanSpokenText(r.text);
+      var allRemoved = r.removed.concat(c.removed);
+      if (!c.text) {
         chromeRemoved.push({ text: p.text, index: p.index, score: 0, chrome: true });
       } else {
-        out.push({ text: r.text, index: p.index, score: p.score, linkDensity: p.linkDensity });
-        if (r.removed.length) chromeRemoved.push({ text: r.removed.join(" "), index: p.index, score: 0, chrome: true });
+        out.push({ text: c.text, index: p.index, score: p.score, linkDensity: p.linkDensity });
+        if (allRemoved.length) chromeRemoved.push({ text: allRemoved.join(" "), index: p.index, score: 0, chrome: true });
       }
     });
     return { kept: out, chromeRemoved: chromeRemoved };
+  }
+  /* URLs and link pointers must NEVER be spoken — or shown as spoken
+   * text, so what you see is what you hear. Strips every raw URL
+   * (http(s)://…, www.…), bare domain and email address, drops
+   * markdown links to their text, cuts UI-chrome clauses wherever
+   * they appear mid-sentence ("…and click next to continue"), and
+   * drops sentences that only exist to point at a link. Returns
+   * { text, removed } — removed is what was cut, so the radar can
+   * count it and show it under "Show removed". */
+  var SPOKEN_URL_RE = /https?:\/\/[^\s"'<>)\]]+/gi;
+  var SPOKEN_WWW_RE = /(^|[\s("'])www\.[^\s"'<>)\]]+/gi;
+  var SPOKEN_DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|co|gov|edu|me|ai|app|dev|uk|au|ca|de|fr|es|it|nl|in|jp|cn|br|za|mx|news|blog|site|online)(?:\/[^\s"'<>)\]]*)?/gi;
+  var SPOKEN_EMAIL_RE = /\b[\w.+-]+@[\w-]+\.[\w.]+\b/gi;
+  var SPOKEN_MD_LINK_RE = /\[([^\]]+)\]\([^)]*\)/g;
+  // A sentence that only points at a link ("Read the full story",
+  // "For more details") — dropped once its URL is gone.
+  var LINK_POINTER_SENTENCE_RE = /^(read|see|check|find|visit|go to|click|tap)\s+(the\s+)?(full\s+)?(story|article|report|post|details|more|it|this)\b|^for\s+(more|details|the full story)\b|^more\s+(details|info)\b/i;
+  // UI-chrome clauses, wherever they sit inside a sentence. Each match
+  // is capped (~40 chars, stops at punctuation) so real content after
+  // the chrome phrase is never eaten.
+  var INLINE_CHROME_RES = [
+    /[,;]?\s*(and\s+)?(click|tap|press)\s+(here|next|to continue|below|above|for (more|details))\b[^.!?,;]{0,40}/gi,
+    /[,;]?\s*read more\b[^.!?,;]{0,30}/gi,
+    /[,;]?\s*continue reading\b[^.!?,;]{0,30}/gi,
+    /[,;]?\s*subscribe( to (our )?(newsletter|updates))?\b[^.!?,;]{0,30}/gi,
+    /[,;]?\s*share this( article| post| story)?\b[^.!?,;]{0,30}/gi
+  ];
+  function cleanSpokenText(text) {
+    var removed = [];
+    var t = String(text || "");
+    function cut(re) {
+      t = t.replace(re, function (m) {
+        var mm = String(m).trim();
+        if (mm) removed.push(mm);
+        return " ";
+      });
+    }
+    // Markdown links keep their text, drop the URL.
+    t = t.replace(SPOKEN_MD_LINK_RE, function (m, label) { removed.push(m); return label; });
+    cut(SPOKEN_URL_RE);
+    cut(SPOKEN_WWW_RE);
+    cut(SPOKEN_EMAIL_RE);
+    cut(SPOKEN_DOMAIN_RE);
+    INLINE_CHROME_RES.forEach(cut);
+    t = t.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.!?;:])/g, "$1").trim();
+    var kept = [], dropped = [];
+    splitSentences(t).forEach(function (s) {
+      // Drop a dangling preposition/conjunction left behind by a cut.
+      var s2 = s.replace(/\s+(at|to|on|in|for|and|or|with|from|of|by)\s*([.!?]|$)/gi, "$2").trim();
+      s2 = s2.replace(/[ \t]{2,}/g, " ").trim();
+      if (!s2) { dropped.push(s); return; }
+      if (wordsOf(s2) < 8 && LINK_POINTER_SENTENCE_RE.test(s2)) { dropped.push(s2); return; }
+      kept.push(s2);
+    });
+    return { text: kept.join(" "), removed: removed.concat(dropped) };
   }
   function radarFilter(paras, isX) {
     return radarFilterObjs(paras.map(function (t, i) { return { text: t, linkDensity: 0, index: i }; }), isX);
@@ -693,7 +756,10 @@
     return { user: m[1], id: m[2] };
   }
   function stripShortLinks(text) {
-    return String(text || "").replace(/https?:\/\/t\.co\/\S+/gi, "").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    // X posts: strip every URL (not just t.co) and UI chrome, so a
+    // link in a post is never read aloud.
+    var c = cleanSpokenText(String(text || ""));
+    return c.text.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
   }
   // Pull every text part out of an fx/vxTwitter API response: the main post
   // plus any thread / conversation parts, in order, de-duplicated.
@@ -900,78 +966,81 @@
    * No device/browser voice is EVER listed here. On Carl's Pixel the
    * browser's own voices sounded robotic, and a 300-voice picker with
    * no descriptions was impossible to choose from. Only curated AI
-   * voices appear: Microsoft Edge Read Aloud voices (free, no key)
-   * and the free Google voice. Language first, then a small decisive
-   * subset per language — never all languages mixed, never 300 voices.
-   * Every Microsoft voice name below was verified against Microsoft's
-   * live voice list (Nov 10, 2026). Each entry: Edge ShortName, label,
-   * plain-language description, accent tag, gender, use-case tag.
-   * The Google voice is added per language by renderVoiceCards(). */
+   * voices appear: Microsoft Edge Read Aloud voices (free, no key).
+   * The free Google voice is NOT a choice anywhere — it is an
+   * unlisted last-resort playback engine only, used silently by no
+   * one: when Microsoft is down the app says so loudly instead.
+   * Language first, then a small decisive subset per language —
+   * never all languages mixed, never 300 voices. Every Microsoft
+   * voice name below was verified against Microsoft's live voice
+   * list (Nov 10, 2026). Each entry: Edge ShortName, label,
+   * plain-language description with a "Best for:" line, accent tag,
+   * gender, use-case tag. */
   var VOICE_LANGUAGES = [
     { code: "en", label: "English", googleTl: "en", googleAccent: "US", sample: "Hello — I'm Auralis. I can read any article aloud for you, in a voice that sounds almost human.", voices: [
-      { name: "en-US-AriaNeural", label: "Microsoft Aria", desc: "Warm, friendly American woman — our most natural free voice", accent: "US", gender: "Female", use: "Articles", recommended: true },
-      { name: "en-US-JennyNeural", label: "Microsoft Jenny", desc: "Bright, upbeat American woman — great for stories", accent: "US", gender: "Female", use: "Stories" },
-      { name: "en-US-GuyNeural", label: "Microsoft Guy", desc: "Calm, steady American man — great for long articles", accent: "US", gender: "Male", use: "Articles" },
-      { name: "en-US-EmmaNeural", label: "Microsoft Emma", desc: "Clear, gentle American woman", accent: "US", gender: "Female", use: "News" },
-      { name: "en-US-ChristopherNeural", label: "Microsoft Christopher", desc: "Steady American man, newsreader style", accent: "US", gender: "Male", use: "News" },
-      { name: "en-GB-SoniaNeural", label: "Microsoft Sonia", desc: "Warm, clear British woman", accent: "UK", gender: "Female", use: "Articles" },
-      { name: "en-GB-RyanNeural", label: "Microsoft Ryan (UK)", desc: "Warm, clear British man", accent: "UK", gender: "Male", use: "News" },
-      { name: "en-AU-NatashaNeural", label: "Microsoft Natasha", desc: "Warm Australian woman", accent: "AU", gender: "Female", use: "Stories" }
+      { name: "en-US-AriaNeural", label: "Microsoft Aria", desc: "Warm, friendly American woman — our most natural free voice. Best for: articles and news.", accent: "US", gender: "Female", use: "Articles", recommended: true },
+      { name: "en-US-JennyNeural", label: "Microsoft Jenny", desc: "Bright, upbeat American woman. Best for: stories and audiobooks.", accent: "US", gender: "Female", use: "Stories" },
+      { name: "en-US-GuyNeural", label: "Microsoft Guy", desc: "Calm, steady American man. Best for: long articles and narration.", accent: "US", gender: "Male", use: "Articles" },
+      { name: "en-US-EmmaNeural", label: "Microsoft Emma", desc: "Clear, gentle American woman. Best for: news and short articles.", accent: "US", gender: "Female", use: "News" },
+      { name: "en-US-ChristopherNeural", label: "Microsoft Christopher", desc: "Steady American man, newsreader style. Best for: news and articles.", accent: "US", gender: "Male", use: "News" },
+      { name: "en-GB-SoniaNeural", label: "Microsoft Sonia", desc: "Warm, clear British woman. Best for: articles and essays.", accent: "UK", gender: "Female", use: "Articles" },
+      { name: "en-GB-RyanNeural", label: "Microsoft Ryan (UK)", desc: "Warm, clear British man. Best for: news and articles.", accent: "UK", gender: "Male", use: "News" },
+      { name: "en-AU-NatashaNeural", label: "Microsoft Natasha", desc: "Warm Australian woman. Best for: stories and articles.", accent: "AU", gender: "Female", use: "Stories" }
     ]},
     { code: "es", label: "Spanish", googleTl: "es", googleAccent: "Spain", sample: "Hola, soy Auralis. Puedo leer cualquier artículo en voz alta para ti.", voices: [
-      { name: "es-ES-ElviraNeural", label: "Microsoft Elvira", desc: "Warm, clear Spanish woman from Spain", accent: "Spain", gender: "Female", use: "Articles" },
-      { name: "es-ES-AlvaroNeural", label: "Microsoft Alvaro", desc: "Calm, steady Spanish man from Spain", accent: "Spain", gender: "Male", use: "Articles" },
-      { name: "es-ES-XimenaNeural", label: "Microsoft Ximena", desc: "Bright, friendly Spanish woman from Spain", accent: "Spain", gender: "Female", use: "Stories" },
-      { name: "es-MX-DaliaNeural", label: "Microsoft Dalia", desc: "Warm, clear Mexican woman", accent: "Mexico", gender: "Female", use: "Articles" },
-      { name: "es-MX-JorgeNeural", label: "Microsoft Jorge", desc: "Steady, clear Mexican man", accent: "Mexico", gender: "Male", use: "News" }
+      { name: "es-ES-ElviraNeural", label: "Microsoft Elvira", desc: "Warm, clear Spanish woman from Spain. Best for: articles.", accent: "Spain", gender: "Female", use: "Articles" },
+      { name: "es-ES-AlvaroNeural", label: "Microsoft Alvaro", desc: "Calm, steady Spanish man from Spain. Best for: articles.", accent: "Spain", gender: "Male", use: "Articles" },
+      { name: "es-ES-XimenaNeural", label: "Microsoft Ximena", desc: "Bright, friendly Spanish woman from Spain. Best for: stories.", accent: "Spain", gender: "Female", use: "Stories" },
+      { name: "es-MX-DaliaNeural", label: "Microsoft Dalia", desc: "Warm, clear Mexican woman. Best for: stories.", accent: "Mexico", gender: "Female", use: "Articles" },
+      { name: "es-MX-JorgeNeural", label: "Microsoft Jorge", desc: "Steady, clear Mexican man. Best for: news.", accent: "Mexico", gender: "Male", use: "News" }
     ]},
     { code: "fr", label: "French", googleTl: "fr", googleAccent: "France", sample: "Bonjour, je suis Auralis. Je peux lire n'importe quel article à voix haute pour vous.", voices: [
-      { name: "fr-FR-DeniseNeural", label: "Microsoft Denise", desc: "Warm, clear French woman", accent: "France", gender: "Female", use: "Articles" },
-      { name: "fr-FR-HenriNeural", label: "Microsoft Henri", desc: "Calm, steady French man", accent: "France", gender: "Male", use: "Articles" },
-      { name: "fr-FR-EloiseNeural", label: "Microsoft Eloise", desc: "Clear, gentle French woman", accent: "France", gender: "Female", use: "News" },
-      { name: "fr-FR-VivienneMultilingualNeural", label: "Microsoft Vivienne", desc: "Bright, elegant French woman", accent: "France", gender: "Female", use: "Stories" },
-      { name: "fr-FR-RemyMultilingualNeural", label: "Microsoft Remy", desc: "Warm, conversational French man", accent: "France", gender: "Male", use: "Stories" }
+      { name: "fr-FR-DeniseNeural", label: "Microsoft Denise", desc: "Warm, clear French woman. Best for: articles.", accent: "France", gender: "Female", use: "Articles" },
+      { name: "fr-FR-HenriNeural", label: "Microsoft Henri", desc: "Calm, steady French man. Best for: articles.", accent: "France", gender: "Male", use: "Articles" },
+      { name: "fr-FR-EloiseNeural", label: "Microsoft Eloise", desc: "Clear, gentle French woman. Best for: news.", accent: "France", gender: "Female", use: "News" },
+      { name: "fr-FR-VivienneMultilingualNeural", label: "Microsoft Vivienne", desc: "Bright, elegant French woman. Best for: stories.", accent: "France", gender: "Female", use: "Stories" },
+      { name: "fr-FR-RemyMultilingualNeural", label: "Microsoft Remy", desc: "Warm, conversational French man. Best for: stories.", accent: "France", gender: "Male", use: "Stories" }
     ]},
     { code: "de", label: "German", googleTl: "de", googleAccent: "Germany", sample: "Hallo, ich bin Auralis. Ich kann jeden Artikel laut für dich vorlesen.", voices: [
-      { name: "de-DE-KatjaNeural", label: "Microsoft Katja", desc: "Warm, clear German woman", accent: "Germany", gender: "Female", use: "Articles" },
-      { name: "de-DE-ConradNeural", label: "Microsoft Conrad", desc: "Calm, steady German man", accent: "Germany", gender: "Male", use: "Articles" },
-      { name: "de-DE-AmalaNeural", label: "Microsoft Amala", desc: "Bright, friendly German woman", accent: "Germany", gender: "Female", use: "Stories" },
-      { name: "de-DE-KillianNeural", label: "Microsoft Killian", desc: "Clear, steady German man", accent: "Germany", gender: "Male", use: "News" },
-      { name: "de-DE-FlorianMultilingualNeural", label: "Microsoft Florian", desc: "Warm German man", accent: "Germany", gender: "Male", use: "Stories" },
-      { name: "de-DE-SeraphinaMultilingualNeural", label: "Microsoft Seraphina", desc: "Clear, gentle German woman", accent: "Germany", gender: "Female", use: "News" }
+      { name: "de-DE-KatjaNeural", label: "Microsoft Katja", desc: "Warm, clear German woman. Best for: articles.", accent: "Germany", gender: "Female", use: "Articles" },
+      { name: "de-DE-ConradNeural", label: "Microsoft Conrad", desc: "Calm, steady German man. Best for: articles.", accent: "Germany", gender: "Male", use: "Articles" },
+      { name: "de-DE-AmalaNeural", label: "Microsoft Amala", desc: "Bright, friendly German woman. Best for: stories.", accent: "Germany", gender: "Female", use: "Stories" },
+      { name: "de-DE-KillianNeural", label: "Microsoft Killian", desc: "Clear, steady German man. Best for: news.", accent: "Germany", gender: "Male", use: "News" },
+      { name: "de-DE-FlorianMultilingualNeural", label: "Microsoft Florian", desc: "Warm German man. Best for: stories.", accent: "Germany", gender: "Male", use: "Stories" },
+      { name: "de-DE-SeraphinaMultilingualNeural", label: "Microsoft Seraphina", desc: "Clear, gentle German woman. Best for: news.", accent: "Germany", gender: "Female", use: "News" }
     ]},
     { code: "it", label: "Italian", googleTl: "it", googleAccent: "Italy", sample: "Ciao, sono Auralis. Posso leggere qualsiasi articolo ad alta voce per te.", voices: [
-      { name: "it-IT-IsabellaNeural", label: "Microsoft Isabella", desc: "Warm, clear Italian woman", accent: "Italy", gender: "Female", use: "Articles" },
-      { name: "it-IT-DiegoNeural", label: "Microsoft Diego", desc: "Calm, steady Italian man", accent: "Italy", gender: "Male", use: "Articles" },
-      { name: "it-IT-ElsaNeural", label: "Microsoft Elsa", desc: "Bright, friendly Italian woman", accent: "Italy", gender: "Female", use: "Stories" },
-      { name: "it-IT-GiuseppeMultilingualNeural", label: "Microsoft Giuseppe", desc: "Warm, conversational Italian man", accent: "Italy", gender: "Male", use: "Stories" }
+      { name: "it-IT-IsabellaNeural", label: "Microsoft Isabella", desc: "Warm, clear Italian woman. Best for: articles.", accent: "Italy", gender: "Female", use: "Articles" },
+      { name: "it-IT-DiegoNeural", label: "Microsoft Diego", desc: "Calm, steady Italian man. Best for: articles.", accent: "Italy", gender: "Male", use: "Articles" },
+      { name: "it-IT-ElsaNeural", label: "Microsoft Elsa", desc: "Bright, friendly Italian woman. Best for: stories.", accent: "Italy", gender: "Female", use: "Stories" },
+      { name: "it-IT-GiuseppeMultilingualNeural", label: "Microsoft Giuseppe", desc: "Warm, conversational Italian man. Best for: stories.", accent: "Italy", gender: "Male", use: "Stories" }
     ]},
     { code: "pt", label: "Portuguese", googleTl: "pt", googleAccent: "Brazil", sample: "Olá, eu sou Auralis. Posso ler qualquer artigo em voz alta para você.", voices: [
-      { name: "pt-BR-FranciscaNeural", label: "Microsoft Francisca", desc: "Warm, clear Brazilian woman", accent: "Brazil", gender: "Female", use: "Articles" },
-      { name: "pt-BR-AntonioNeural", label: "Microsoft Antonio", desc: "Calm, steady Brazilian man", accent: "Brazil", gender: "Male", use: "Articles" },
-      { name: "pt-BR-ThalitaMultilingualNeural", label: "Microsoft Thalita", desc: "Bright, friendly Brazilian woman", accent: "Brazil", gender: "Female", use: "Stories" }
+      { name: "pt-BR-FranciscaNeural", label: "Microsoft Francisca", desc: "Warm, clear Brazilian woman. Best for: articles.", accent: "Brazil", gender: "Female", use: "Articles" },
+      { name: "pt-BR-AntonioNeural", label: "Microsoft Antonio", desc: "Calm, steady Brazilian man. Best for: articles.", accent: "Brazil", gender: "Male", use: "Articles" },
+      { name: "pt-BR-ThalitaMultilingualNeural", label: "Microsoft Thalita", desc: "Bright, friendly Brazilian woman. Best for: stories.", accent: "Brazil", gender: "Female", use: "Stories" }
     ]},
     { code: "he", label: "Hebrew", googleTl: "he", googleAccent: "Israel", sample: "שלום, אני אורליס. אני יכולה לקרוא כל מאמר בקול רם בשבילך.", voices: [
-      { name: "he-IL-HilaNeural", label: "Microsoft Hila", desc: "Warm, clear Hebrew woman", accent: "Israel", gender: "Female", use: "Articles" },
-      { name: "he-IL-AvriNeural", label: "Microsoft Avri", desc: "Calm, steady Hebrew man", accent: "Israel", gender: "Male", use: "Articles" }
+      { name: "he-IL-HilaNeural", label: "Microsoft Hila", desc: "Warm, clear Hebrew woman. Best for: articles.", accent: "Israel", gender: "Female", use: "Articles" },
+      { name: "he-IL-AvriNeural", label: "Microsoft Avri", desc: "Calm, steady Hebrew man. Best for: articles.", accent: "Israel", gender: "Male", use: "Articles" }
     ]},
     { code: "ar", label: "Arabic", googleTl: "ar", googleAccent: "Saudi Arabia", sample: "مرحباً، أنا أوراليس. يمكنني قراءة أي مقال بصوت عالٍ لك.", voices: [
-      { name: "ar-SA-ZariyahNeural", label: "Microsoft Zariyah", desc: "Warm, clear Arabic woman", accent: "Saudi Arabia", gender: "Female", use: "Articles" },
-      { name: "ar-SA-HamedNeural", label: "Microsoft Hamed", desc: "Calm, steady Arabic man", accent: "Saudi Arabia", gender: "Male", use: "Articles" }
+      { name: "ar-SA-ZariyahNeural", label: "Microsoft Zariyah", desc: "Warm, clear Arabic woman. Best for: articles.", accent: "Saudi Arabia", gender: "Female", use: "Articles" },
+      { name: "ar-SA-HamedNeural", label: "Microsoft Hamed", desc: "Calm, steady Arabic man. Best for: articles.", accent: "Saudi Arabia", gender: "Male", use: "Articles" }
     ]},
     { code: "hi", label: "Hindi", googleTl: "hi", googleAccent: "India", sample: "नमस्ते, मैं औरालिस हूँ। मैं आपके लिए कोई भी लेख ज़ोर से पढ़ सकती हूँ।", voices: [
-      { name: "hi-IN-SwaraNeural", label: "Microsoft Swara", desc: "Warm, clear Hindi woman", accent: "India", gender: "Female", use: "Articles" },
-      { name: "hi-IN-MadhurNeural", label: "Microsoft Madhur", desc: "Calm, steady Hindi man", accent: "India", gender: "Male", use: "Articles" }
+      { name: "hi-IN-SwaraNeural", label: "Microsoft Swara", desc: "Warm, clear Hindi woman. Best for: articles.", accent: "India", gender: "Female", use: "Articles" },
+      { name: "hi-IN-MadhurNeural", label: "Microsoft Madhur", desc: "Calm, steady Hindi man. Best for: articles.", accent: "India", gender: "Male", use: "Articles" }
     ]},
     { code: "ja", label: "Japanese", googleTl: "ja", googleAccent: "Japan", sample: "こんにちは、私はオーラリスです。どんな記事でも音声で読み上げることができます。", voices: [
-      { name: "ja-JP-NanamiNeural", label: "Microsoft Nanami", desc: "Warm, clear Japanese woman", accent: "Japan", gender: "Female", use: "Articles" },
-      { name: "ja-JP-KeitaNeural", label: "Microsoft Keita", desc: "Calm, steady Japanese man", accent: "Japan", gender: "Male", use: "Articles" }
+      { name: "ja-JP-NanamiNeural", label: "Microsoft Nanami", desc: "Warm, clear Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
+      { name: "ja-JP-KeitaNeural", label: "Microsoft Keita", desc: "Calm, steady Japanese man. Best for: articles.", accent: "Japan", gender: "Male", use: "Articles" }
     ]},
     { code: "zh", label: "Chinese (Mandarin)", googleTl: "zh-CN", googleAccent: "China", sample: "你好，我是奥拉里斯。我可以大声朗读任何文章。", voices: [
-      { name: "zh-CN-XiaoxiaoNeural", label: "Microsoft Xiaoxiao", desc: "Warm, clear Mandarin woman", accent: "China", gender: "Female", use: "Articles" },
-      { name: "zh-CN-XiaoyiNeural", label: "Microsoft Xiaoyi", desc: "Clear, gentle Mandarin woman", accent: "China", gender: "Female", use: "News" },
-      { name: "zh-CN-YunyangNeural", label: "Microsoft Yunyang", desc: "Calm, steady Mandarin man", accent: "China", gender: "Male", use: "Articles" },
-      { name: "zh-CN-YunjianNeural", label: "Microsoft Yunjian", desc: "Warm Mandarin man", accent: "China", gender: "Male", use: "Stories" }
+      { name: "zh-CN-XiaoxiaoNeural", label: "Microsoft Xiaoxiao", desc: "Warm, clear Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
+      { name: "zh-CN-XiaoyiNeural", label: "Microsoft Xiaoyi", desc: "Clear, gentle Mandarin woman. Best for: news.", accent: "China", gender: "Female", use: "News" },
+      { name: "zh-CN-YunyangNeural", label: "Microsoft Yunyang", desc: "Calm, steady Mandarin man. Best for: articles.", accent: "China", gender: "Male", use: "Articles" },
+      { name: "zh-CN-YunjianNeural", label: "Microsoft Yunjian", desc: "Warm Mandarin man. Best for: stories.", accent: "China", gender: "Male", use: "Stories" }
     ]}
   ];
   var DEFAULT_EDGE_VOICE = "en-US-AriaNeural";
@@ -999,31 +1068,20 @@
     return parts.length >= 2 ? parts[0] + "-" + parts[1] : "en-US";
   }
   function currentEdgeVoice() { return (currentVoiceChoice().edgeVoice || DEFAULT_EDGE_VOICE); }
-  // The visitor's voice choice: which engine, and which voice in it.
+  // The visitor's voice choice: which Microsoft AI voice.
   // Default = Microsoft Aria (Edge Read Aloud), free, no key — unless
-  // the visitor picked otherwise. "browser" / "free" from older
-  // versions no longer exist: the browser engine was removed because
-  // device voices sounded robotic — they now fall back to Aria.
+  // the visitor picked otherwise. "google" and "browser" are legacy
+  // values saved by older versions: the Google voice is no longer a
+  // choice and device voices are gone, so both migrate to Aria.
   function currentVoiceChoice() {
     var saved = storeGet(LS.voice, {}) || {};
-    var v = (saved.engine || "").toString();
-    if (v === "edge") return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, browserName: "" };
-    if (v === "google") return { engine: "google", edgeVoice: DEFAULT_EDGE_VOICE, browserName: "" };
-    return { engine: "edge", edgeVoice: DEFAULT_EDGE_VOICE, browserName: "" };
-  }
-  // The visitor's voice choice: which engine, and which voice in it.
-  // Default = Microsoft Aria (Edge Read Aloud), free, no key — unless
-  // the visitor picked otherwise.
-  function currentVoiceChoice() {
-    var saved = storeGet(LS.voice, {}) || {};
-    var v = (saved.engine || "").toString();
-    if (v === "edge" || v === "google" || v === "browser") {
-      return { engine: v, edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, browserName: saved.name || "" };
-    }
-    return { engine: "edge", edgeVoice: DEFAULT_EDGE_VOICE, browserName: "" };
+    return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, browserName: "" };
   }
   // The voice picker: language-first, curated cards only.
-  // No browser/device voice is ever listed or used.
+  // No browser/device voice is ever listed or used, and the Google
+  // voice is not a choice either — it is an unlisted last-resort
+  // playback engine only. Every option here is a human-sounding
+  // Microsoft AI voice.
   function renderReaderVoiceSelect() {
     var sel = $("voiceSelect"); if (!sel) return;
     var choice = currentVoiceChoice();
@@ -1031,6 +1089,7 @@
     sel.innerHTML = "";
     var g1 = document.createElement("optgroup");
     g1.label = "Microsoft AI voices — free, no key";
+    if (state.edgeDown) g1.disabled = true; // can't pick what can't play
     lang.voices.forEach(function (ev) {
       var opt = el("option", null, ev.label + " — " + ev.desc);
       opt.value = "edge:" + ev.name;
@@ -1038,10 +1097,6 @@
       g1.appendChild(opt);
     });
     sel.appendChild(g1);
-    var gopt = el("option", null, "Google voice — clear, natural (free, no key)");
-    gopt.value = "google:free";
-    if (choice.engine === "google") gopt.selected = true;
-    sel.appendChild(gopt);
     if (premiumActive()) {
       var g3 = document.createElement("optgroup");
       g3.label = "Premium voices — your key";
@@ -1053,17 +1108,20 @@
     if (!sel.value) sel.value = "edge:" + lang.voices[0].name;
   }
   function voiceCard(entry, engine) {
-    var card = el("div", "voice-card");
+    var card = el("div", "voice-card edge-voice");
     var choice = currentVoiceChoice();
-    var selected = engine === "edge" ? (choice.engine === "edge" && choice.edgeVoice === entry.name) : (choice.engine === "google");
+    var selected = choice.engine === "edge" && choice.edgeVoice === entry.name;
+    var unavailable = !!state.edgeDown;
     if (selected) card.classList.add("selected");
-    card.setAttribute("role", "button");
-    card.setAttribute("tabindex", "0");
-    card.setAttribute("aria-pressed", selected ? "true" : "false");
+    if (unavailable) {
+      card.classList.add("unavailable");
+      card.setAttribute("aria-disabled", "true");
+    }
     var top = el("div", "voice-card-top");
     top.appendChild(el("span", "voice-card-name", entry.label));
     if (entry.recommended) top.appendChild(el("span", "recommended-badge", "★ Recommended"));
     if (selected) top.appendChild(el("span", "voice-badge selected-badge", "✓ Selected"));
+    if (unavailable) top.appendChild(el("span", "voice-badge unavailable-badge", "Unavailable in this browser"));
     card.appendChild(top);
     card.appendChild(el("div", "voice-desc", entry.desc));
     var tags = el("div", "voice-card-tags");
@@ -1074,17 +1132,20 @@
     var actions = el("div", "voice-card-actions");
     var pv = el("button", "btn btn-ghost btn-small", "▶ Preview");
     pv.type = "button";
-    pv.addEventListener("click", function (ev) { ev.stopPropagation(); if (engine === "google") previewGoogleVoice(); else previewEdgeVoice(entry); });
+    pv.disabled = unavailable;
+    if (unavailable) pv.title = "Microsoft voices aren't answering in this browser";
+    // The card itself is NOT clickable: nested interactive elements
+    // meant a Preview tap could be swallowed by the card's own click
+    // handler. Only the two buttons below act.
+    pv.addEventListener("click", function () { previewEdgeVoice(entry); });
     actions.appendChild(pv);
     var use = el("button", "btn btn-dark btn-small", selected ? "✓ Using" : "Use this voice");
     use.type = "button";
-    use.addEventListener("click", function (ev) { ev.stopPropagation(); selectVoice(engine, entry.name); });
+    use.disabled = unavailable;
+    if (unavailable) use.title = "Microsoft voices aren't answering in this browser";
+    use.addEventListener("click", function () { selectVoice(engine, entry.name); });
     actions.appendChild(use);
     card.appendChild(actions);
-    card.addEventListener("click", function () { selectVoice(engine, entry.name); });
-    card.addEventListener("keydown", function (ev) {
-      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectVoice(engine, entry.name); }
-    });
     return card;
   }
   function renderVoiceCards() {
@@ -1094,21 +1155,51 @@
     var sel = $("voiceLangSelect");
     if (sel && sel.value !== lang.code) sel.value = lang.code;
     lang.voices.forEach(function (v) { wrap.appendChild(voiceCard(v, "edge")); });
-    wrap.appendChild(voiceCard({
-      name: "google", label: "Google voice",
-      desc: "Clear, natural — the free Google voice, played over the internet. No key, no credits.",
-      accent: lang.googleAccent, gender: "Female", use: "Articles"
-    }, "google"));
   }
   function updateVoiceEmptyState() {
     var box = $("voiceEmptyState"); if (!box) return;
     box.hidden = !(state.edgeFailed && state.googleFailed);
   }
-  function loadVoices() {
+  // The loud Edge-failure message — shown as a banner AND a toast,
+  // never whispered. The single free Google voice is only a last
+  // resort while this banner is showing; it is never presented as
+  // a voice anyone chose.
+  var EDGE_DOWN_MSG = "Microsoft voices aren't answering in this browser — you're hearing the single free Google voice, so every voice sounds the same. For the real Microsoft voices, open this in Microsoft Edge, or add a free ElevenLabs/Cartesia key below.";
+  function edgeDownToast() { toast(EDGE_DOWN_MSG); }
+  function markEdgeDown() {
+    state.edgeDown = true;
+    state.edgeFailed = true;
+    updateEdgeDownUI();
+    edgeDownToast();
+  }
+  function updateEdgeDownUI() {
+    var banner = $("edgeDownBanner");
+    if (banner) banner.hidden = !state.edgeDown;
+    // Re-render the voice UI: the cards are (re)built with the
+    // unavailable badge + disabled buttons when Edge is down, and the
+    // reader dropdown's Edge group is disabled too. Toggling a class
+    // alone would leave the badge and buttons in their old state.
     renderReaderVoiceSelect();
     renderVoiceCards();
     updateVoiceEmptyState();
     syncBottomBar();
+  }
+  // Lightweight handshake probe on load: opening the Microsoft
+  // WebSocket proves the voices can answer in this browser. If it
+  // fails, the banner goes up and the cards grey out BEFORE the
+  // visitor picks — nobody is offered a voice that will not play.
+  function probeEdgeTransport() {
+    if (state.edgeProbed) return;
+    state.edgeProbed = true;
+    if (typeof WebSocket === "undefined") { markEdgeDown(); return; }
+    edgeConnect().then(function () {
+      state.edgeFailed = false;
+      state.edgeDown = false;
+      updateEdgeDownUI();
+    }).catch(function () { markEdgeDown(); });
+  }
+  function loadVoices() {
+    updateEdgeDownUI(); // renders select + cards + banner + bottom bar
   }
   function setVoiceLanguage(code) {
     var cur = storeGet(LS.voice, {}) || {};
@@ -1125,27 +1216,32 @@
     loadVoices();
   }
   function selectVoice(engine, edgeVoice) {
+    if (state.edgeDown) { edgeDownToast(); return; } // can't pick what can't play
     var cur = storeGet(LS.voice, {}) || {};
-    cur.engine = engine;
-    if (engine === "edge") cur.edgeVoice = edgeVoice || DEFAULT_EDGE_VOICE;
+    cur.engine = "edge";
+    cur.edgeVoice = edgeVoice || DEFAULT_EDGE_VOICE;
     cur.name = "";
     cur.lang = currentLanguage();
     storeSet(LS.voice, cur);
     state.freeTransport = null; // re-decide the free transport for the new voice
-    state.edgeFailed = false; state.googleFailed = false;
+    state.edgeFailed = false;
     loadVoices();
-    var label = engine === "google" ? "the free Google voice" : edgeVoiceByName(cur.edgeVoice).label;
-    toast("Voice set to " + label + " (free).");
+    toast("Voice set to " + edgeVoiceByName(cur.edgeVoice).label + " (free).");
   }
   function persistVoiceChoice() {
     var sel = $("voiceSelect");
     var val = sel ? sel.value : "";
+    if (state.edgeDown && val.indexOf("edge:") === 0) {
+      edgeDownToast();
+      renderReaderVoiceSelect();
+      renderVoiceCards();
+      return;
+    }
     var cur = storeGet(LS.voice, {}) || {};
     var prev = currentVoiceChoice();
     cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.name = "";
-    if (val.indexOf("edge:") === 0) { cur.engine = "edge"; cur.edgeVoice = val.slice(5); }
-    else if (val.indexOf("google:") === 0) { cur.engine = "google"; }
-    else if (val.indexOf("premium:") === 0) { cur.engine = prev.engine; cur.edgeVoice = prev.edgeVoice; }
+    if (val.indexOf("edge:") === 0) { cur.edgeVoice = val.slice(5); }
+    else if (val.indexOf("premium:") === 0) { cur.edgeVoice = prev.edgeVoice; }
     cur.lang = currentLanguage();
     var r = $("rateRange"), p = $("pitchRange");
     cur.rate = r ? parseFloat(r.value) : 1; cur.pitch = p ? parseFloat(p.value) : 1;
@@ -1160,14 +1256,13 @@
    * default: real Microsoft Natural voices (Aria, Jenny, Guy…) served
    * from speech.platform.bing.com, the same endpoint Microsoft Edge uses
    * for Read Aloud. It works in Microsoft Edge; in other browsers the
-   * handshake may be refused, so we fall back to the free Google voice
-   * (translate.google.com TTS), which returns real MP3 audio.
-   * Verified from this sandbox (Nov 10, 2026): voices list HTTP 200,
-   * 170,998 bytes, 322 voices; the WebSocket synthesis handshake was
-   * refused with HTTP 403 in every variant tried here (the sandbox's
-   * egress proxy cannot pass the handshake), so Edge is best-effort in
-   * the browser and the verified Google path is the fallback. Karaoke
-   * highlighting is timer-estimated on this engine. */
+   * handshake may be refused — then the app says so LOUDLY (banner +
+   * toast, Microsoft cards greyed out) and uses the free Google voice
+   * (translate.google.com TTS) ONLY as an unlisted last resort while
+   * the banner shows. Google has one voice per language, which is why
+   * a silent fallback made every voice sound the same — so the
+   * fallback is never silent. Karaoke highlighting is timer-estimated
+   * on this engine. */
   var EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
   var EDGE_SEC_MS_GEC_VERSION = "1-141.0.3537.57";
   function edgeRateString() {
@@ -1247,20 +1342,30 @@
     return "https://translate.google.com/translate_tts?ie=UTF-8&q=" + encodeURIComponent(text) + "&tl=" + encodeURIComponent(tl || "en") + "&client=tw-ob";
   }
   // Chains several short Google TTS chunks behind one play/pause/onended
-  // interface (Google caps each request at ~200 characters).
+  // interface (Google caps each request at ~200 characters). This is the
+  // UNLISTED last resort only: it has exactly one voice per language,
+  // which is why a silent fallback to it made every voice sound the
+  // same. Errors are tracked: if every chunk fails, the chain reports
+  // an error instead of ending — a failed listen must never look
+  // finished.
   function googleAudioChain(chunks) {
     var tl = languageEntry(currentLanguage()).googleTl;
     var audios = chunks.map(function (c) { var a = new Audio(googleFreeUrl(c, tl)); a.preload = "auto"; return a; });
-    var i = 0, endedFn = null;
+    var i = 0, endedFn = null, errorFn = null, failed = 0;
+    function advanceOrFail(k) {
+      if (k < audios.length - 1) {
+        i = k + 1;
+        audios[i].play().catch(function () {
+          failed++;
+          if (failed >= audios.length) { if (errorFn) errorFn(); }
+          else if (endedFn) endedFn();
+        });
+      } else if (failed >= audios.length) { if (errorFn) errorFn(); }
+      else if (endedFn) endedFn();
+    }
     audios.forEach(function (a, k) {
-      a.addEventListener("ended", function () {
-        if (k < audios.length - 1) { i = k + 1; audios[i].play().catch(function () {}); }
-        else if (endedFn) endedFn();
-      });
-      a.addEventListener("error", function () {
-        if (k < audios.length - 1) { i = k + 1; audios[i].play().catch(function () {}); }
-        else if (endedFn) endedFn();
-      });
+      a.addEventListener("ended", function () { advanceOrFail(k); });
+      a.addEventListener("error", function () { failed++; advanceOrFail(k); });
     });
     return {
       play: function () { return audios[i].play(); },
@@ -1269,7 +1374,8 @@
       set currentTime(v) { try { audios[i].currentTime = v; } catch (e) {} },
       set onended(fn) { endedFn = fn; },
       get onended() { return endedFn; },
-      set onerror(fn) { /* errors advance the chain; a final error ends it */ }
+      set onerror(fn) { errorFn = fn; },
+      get onerror() { return errorFn; }
     };
   }
   function edgeSentenceAudio(text) {
@@ -1285,15 +1391,19 @@
   }
   function freeFetchAudio(text) {
     if (state.freeTransport === "google") return googleSentenceAudio(text);
-    // Microsoft first; fall back to the free Google voice on any failure.
+    // Microsoft first. If it fails, say so LOUDLY (banner + toast,
+    // Microsoft cards greyed out) and use the single free Google
+    // voice ONLY as an unlisted last resort while the banner shows.
+    // Never let a failed transport masquerade as a working voice.
     return edgeSentenceAudio(text).then(function (a) {
       state.freeTransport = "edge";
       state.edgeFailed = false;
+      if (state.edgeDown) { state.edgeDown = false; updateEdgeDownUI(); }
       return a;
     }).catch(function () {
       state.freeTransport = "google";
       state.edgeFailed = true;
-      toast("Microsoft voices didn't answer — using the free Google voice instead.");
+      markEdgeDown();
       return googleSentenceAudio(text);
     });
   }
@@ -1313,10 +1423,25 @@
     };
     tick();
   }
+  // A failed listen stops HERE, on this sentence, with a loud reason.
+  // It never advances through errors to 100% and never toasts
+  // "Finished" unless every sentence actually played.
+  function failPlayback(reason) {
+    state.playing = false; state.paused = false;
+    clearTimeout(state.freeTimer); clearTimeout(state.premiumTimer); clearTimeout(state.wordTimer);
+    if (state.freeAudio) { try { state.freeAudio.pause(); } catch (e) {} state.freeAudio = null; }
+    if (state.premiumAudio) { try { state.premiumAudio.pause(); } catch (e) {} state.premiumAudio = null; }
+    edgeClose();
+    setPlayButton(false);
+    var err = $("playbackError");
+    if (err) { err.hidden = false; err.textContent = "Playback failed — " + reason + " Tap Play to retry."; }
+    updateProgress();
+    toast("Playback failed — " + reason + " Tap Play to retry.");
+  }
   function playFree(fromIdx) {
     if (!state.sentences.length) { toast("Open an article first."); return; }
-    if (currentVoiceChoice().engine === "google") state.freeTransport = "google";
-    state.playing = true; state.paused = false; state.engine = "free";
+    state.playing = true; state.paused = false; state.engine = "free"; state.finished = false;
+    var errBox = $("playbackError"); if (errBox) errBox.hidden = true;
     setPlayButton(true);
     var start = typeof fromIdx === "number" ? fromIdx : (state.currentSentence < 0 ? 0 : state.currentSentence);
     var idx = start;
@@ -1333,9 +1458,9 @@
         if (!state.playing || state.engine !== "free") return;
         state.freeAudio = audio;
         audio.onended = function () { idx++; next(); };
-        audio.onerror = function () { idx++; next(); };
+        audio.onerror = function () { failPlayback("The audio for this sentence failed to play."); };
         if (state.paused) return; // resume will play it
-        audio.play().catch(function () { idx++; next(); });
+        audio.play().catch(function () { failPlayback("Audio playback was blocked by the browser — tap Play again."); });
       }).catch(function () {
         // Both free transports failed. Never fall back to a robotic
         // device voice — say so honestly instead.
@@ -1343,7 +1468,7 @@
         state.googleFailed = true;
         setPlayButton(false);
         updateVoiceEmptyState();
-        toast("Free AI voices aren't answering in this browser — try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.");
+        failPlayback("Free AI voices aren't answering in this browser — try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.");
       });
     }
     next();
@@ -1352,16 +1477,13 @@
     var sample = languageEntry(currentLanguage()).sample;
     edgeSynthesize(sample, ev.name, localeOf(ev.name)).then(function (blob) {
       var a = new Audio(URL.createObjectURL(blob));
-      a.play().catch(function () { toast("Audio playback was blocked — tap play again."); });
+      a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
+      a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function () {
-      toast("Microsoft voices didn't answer — playing the free Google voice instead.");
-      previewGoogleVoice();
+      // Same loud handling as playback: say Microsoft is down and
+      // do NOT silently play the Google voice as if it were this voice.
+      markEdgeDown();
     });
-  }
-  function previewGoogleVoice() {
-    var lang = languageEntry(currentLanguage());
-    var a = new Audio(googleFreeUrl(lang.sample, lang.googleTl));
-    a.play().catch(function () { toast("Audio playback was blocked — tap play again."); });
   }
 
   function setPlayButton(playing) {
@@ -1373,9 +1495,9 @@
     var nameEl = $("bottomVoiceName");
     if (!nameEl) return;
     if (premiumActive()) { nameEl.textContent = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)"; return; }
+    if (state.edgeDown) { nameEl.textContent = "Voice: Google fallback — Microsoft voices unavailable in this browser"; return; }
     var choice = currentVoiceChoice();
-    if (choice.engine === "edge") nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
-    else nameEl.textContent = "Voice: Google voice · free";
+    nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
   }
 
   // Skip ~15 seconds of speech: for premium audio, seek the audio element;
@@ -1422,7 +1544,7 @@
   }
 
   function stopPlayback(silent) {
-    state.playing = false; state.paused = false;
+    state.playing = false; state.paused = false; state.finished = false;
     clearTimeout(state.wordTimer);
     clearTimeout(state.premiumTimer);
     clearTimeout(state.freeTimer);
@@ -1432,8 +1554,16 @@
     setPlayButton(false);
     if (!silent) { clearHighlight(); }
   }
+  // Stop means back to the start: progress resets to 0%.
+  function resetProgress() {
+    state.currentSentence = -1; state.finished = false;
+    clearHighlight();
+    var err = $("playbackError"); if (err) err.hidden = true;
+    updateProgress();
+  }
   function finishPlayback() {
     stopPlayback(true);
+    state.finished = true;
     state.currentSentence = state.sentences.length - 1;
     updateProgress();
     clearHighlight();
@@ -1523,7 +1653,8 @@
 
   function playPremium(fromIdx) {
     if (!state.sentences.length) { toast("Open an article first."); return; }
-    state.playing = true; state.paused = false; state.engine = "premium";
+    state.playing = true; state.paused = false; state.engine = "premium"; state.finished = false;
+    var errBox = $("playbackError"); if (errBox) errBox.hidden = true;
     setPlayButton(true);
     var start = typeof fromIdx === "number" ? fromIdx : (state.currentSentence < 0 ? 0 : state.currentSentence);
     var queue = state.sentences.slice(start);
@@ -1582,8 +1713,9 @@
     }
     // Fresh play: premium if configured, else the chosen free AI voice.
     // Pressing play is the user asking to follow along again.
+    // After a finish, Play restarts from the top.
     setAutoFollow(true, true);
-    var restart = state.currentSentence >= state.sentences.length - 1 ? 0 : undefined;
+    var restart = (state.finished || state.currentSentence >= state.sentences.length - 1) ? 0 : undefined;
     if (premiumActive()) playPremium(restart);
     else playFree(restart);
   }
@@ -1826,7 +1958,7 @@
       var next = premiumCfg(); next.key = ""; next.provider = "none"; next.voiceId = ""; next.model = ""; next.region = ""; next.baseUrl = "";
       storeSet(LS.premium, next);
       renderProviderForm();
-      toast("Premium provider removed — back to the free browser voice.");
+      toast("Premium provider removed — back to the free Microsoft AI voices.");
     });
     row.appendChild(save); row.appendChild(setDefault); row.appendChild(test); row.appendChild(clear);
     form.appendChild(row);
@@ -2299,7 +2431,7 @@
     // nothing is shown and no error appears unless it answers.
     autoDetectLocalAI();
     syncBottomBar();
-    $("stopBtn").addEventListener("click", function () { stopPlayback(false); updateProgress(); toast("Stopped."); });
+    $("stopBtn").addEventListener("click", function () { stopPlayback(false); resetProgress(); toast("Stopped."); });
     $("prevSentenceBtn").addEventListener("click", function () { skipSentence(-1); });
     $("nextSentenceBtn").addEventListener("click", function () { skipSentence(1); });
     $("voiceSelect").addEventListener("change", persistVoiceChoice);
@@ -2443,12 +2575,25 @@
 
     // Voices: curated AI voices only — no device/browser voices,
     // so there is nothing to wait for from speechSynthesis.
+    // Probe the Microsoft transport shortly after load, so a browser
+    // where it can't answer says so (banner + greyed-out cards)
+    // before the visitor picks a voice.
     var langSel = $("voiceLangSelect");
     if (langSel) {
       langSel.value = currentLanguage();
       langSel.addEventListener("change", function () { setVoiceLanguage(langSel.value); });
     }
     loadVoices();
+    setTimeout(probeEdgeTransport, 800);
+    var retryBtn = $("edgeRetryBtn");
+    if (retryBtn) retryBtn.addEventListener("click", function () {
+      state.edgeDown = false; state.edgeFailed = false; state.freeTransport = null; state.edgeProbed = false;
+      updateEdgeDownUI();
+      toast("Retrying Microsoft voices…");
+      probeEdgeTransport();
+    });
+    var verEl = $("appVersion");
+    if (verEl) verEl.textContent = APP_VERSION;
     wireCloneStudio();
     wireHf();
 

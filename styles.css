@@ -165,7 +165,7 @@ body.show-more .more-section { display: block; }
 .theme-group { display: flex; gap: 6px; }
 .theme-btn[aria-pressed="true"] { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
 body.reader-mode .site-header, body.reader-mode .samples, body.reader-mode .more-section,
-body.reader-mode .coffee, body.reader-mode .site-footer { display: none !important; }
+body.reader-mode #voices, body.reader-mode .coffee, body.reader-mode .site-footer { display: none !important; }
 body.reader-mode .reader-card { max-width: 720px; margin: 0 auto; }
 body.reader-mode .article-body { font-size: var(--reader-fs, 1.35rem); line-height: 1.9; }
 body.reader-mode.reader-sepia .reader-card { background: #F4ECD8; }
@@ -187,7 +187,11 @@ body.reader-mode.reader-dark .reader-byline { color: #B9B2A2; }
 .bottom-player select { background: var(--ink-2); color: var(--ivory); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
 .bottom-voice { font-size: .88rem; color: var(--ivory-dim); }
 .follow-fab {
-  position: fixed; right: 20px; bottom: 84px; z-index: 60;
+  /* Sticky (not fixed) inside the reader card: it floats while you
+   * read, but scrolls away with the article — it can never cover
+   * the voice cards or anything below the reader. */
+  position: sticky; bottom: 84px; z-index: 60;
+  display: block; width: max-content; margin-left: auto; margin-right: 20px;
   background: linear-gradient(135deg, var(--gold-bright), var(--gold));
   color: #171204; border: 0; border-radius: 999px; padding: 12px 20px;
   font-weight: 700; font-size: .95rem; box-shadow: var(--shadow);
@@ -261,6 +265,10 @@ body.reader-mode.reader-dark .reader-byline { color: #B9B2A2; }
 .progress-track { height: 6px; background: #E9E1CF; border-radius: 999px; overflow: hidden; }
 .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--gold), var(--gold-deep)); border-radius: 999px; transition: width .3s ease; }
 .progress-labels { display: flex; justify-content: space-between; font-size: .82rem; color: var(--muted-dark); margin-top: 7px; }
+/* Playback failure: a loud, persistent line under the progress bar —
+ * a failed listen never silently looks finished. */
+.playback-error { margin: 10px 30px 0; color: #A33D2E; font-weight: 650; font-size: .92rem; }
+.playback-error[hidden] { display: none; }
 
 .player {
   position: sticky; top: 71px; z-index: 20; margin: 18px 0 0;
@@ -350,16 +358,23 @@ section[id] { scroll-margin-top: 88px; }
 .voice-lang-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .voice-lang-row label { font-weight: 650; }
 .voice-lang-row select { font: inherit; background: var(--ink-2); color: var(--ivory); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
-.voice-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.voice-card { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px; background: var(--ink-2); cursor: pointer; display: flex; flex-direction: column; gap: 8px; }
+.voice-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; position: relative; z-index: 1; }
+.voice-card { position: relative; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 16px; background: var(--ink-2); display: flex; flex-direction: column; gap: 8px; }
 .voice-card:hover { border-color: var(--gold); }
 .voice-card.selected { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); background: rgba(201,169,106,.07); }
+/* Microsoft voices proven unavailable in this browser: greyed out,
+ * not clickable, clearly marked — nobody is offered a voice that
+ * will not play. */
+.voice-card.unavailable { opacity: .55; cursor: not-allowed; }
+.voice-card.unavailable:hover { border-color: var(--line); }
+.unavailable-badge { color: #D98A7A; border-color: rgba(194,91,74,.6); }
+.edge-down-banner { margin-bottom: 14px; }
 .voice-card-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .voice-card-name { font-weight: 700; font-size: 1rem; }
 .voice-card-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .voice-tag { font-size: .68rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
 .voice-card-actions { display: flex; gap: 8px; margin-top: 2px; }
-.voice-card-actions .btn { flex-shrink: 0; }
+.voice-card-actions .btn { flex-shrink: 0; position: relative; z-index: 2; }
 .selected-badge { color: #9CC8A8; border-color: rgba(90,138,107,.6); }
 .voice-warn[hidden] { display: none; }
 .provider-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 6px; }
