@@ -40,6 +40,25 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.2 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.2 — the real error, a WASM fallback that cannot silently fail, real download %, no phantom progress**
+
+Why: v1.4.1 shipped (commit 44fbd7f, Release live) and its re-check on cloud Chrome PASSED the paste fix, the copy fix and the stuck bars — but Play and Download audio STILL failed: the Kokoro model would not load, no percentage ever showed, and the bar jumped to 3% on a failed Play. A diagnostic pass proved it is NOT the network (jsDelivr, Hugging Face config + the 86–92MB model file all return HTTP 200) — the failure is at ONNX session creation, after the download — but the exact error was unverifiable because the app swallowed it (no console logging, generic message only). This release fixes the diagnosis gap first, then hardens the paths it exposed:
+
+- **The real error is now visible (the most important fix):** every Kokoro failure path (load, Play, preview, download render) now `console.error`s the full error, and the persistent `#playbackError` box shows the plain message PLUS a small "Details:" line with the actual error message (trimmed to 200 chars, no stack, HTML-escaped). Toasts stay plain-language only, so the v1.4.1 "no raw GPU text in toasts" guarantee still holds. The next real-browser check can quote the exact onnxruntime error instead of guessing.
+- **WASM fallback hardened — with an honest correction:** the v1.4.1 theory (multi-thread WASM needs SharedArrayBuffer, which GitHub Pages cannot provide) was checked against the actual onnxruntime-web 1.22.0-dev source and is WRONG — ort already defaults to 1 thread and falls back to single-threading with a warning when the page is not cross-origin isolated. So SAB was not the cause. What this release does instead: (a) explicitly sets `env.backends.onnx.wasm.numThreads = 1` on the shared transformers.js module instance before any WASM load (best-effort, never blocking, recorded on `window.__AURALIS_WASM_ENV`); (b) surfaces the real error (above) so the true WASM failure cause can finally be seen. Verified from library source while fixing: transformers.js 3.5.1 sets `wasmPaths` to its own dist, which DOES contain `ort-wasm-simd-threaded.jsep.wasm`/`.mjs` (HTTP 200); dtype `q8` maps to `model_quantized.onnx`, which exists in the repo (92MB) — so the model file, the WASM binaries and the network are all fine.
+- **Real download progress:** the progress callback handled transformers.js v2 statuses (`downloading`/`loading`) that v3 never emits — v3.5.1 emits `initiate`/`download`/`progress`/`done`/`ready`, so no percentage ever showed during a real 30s download. The handler now maps the real v3 statuses, the load-box label carries the percentage ("Downloading the voice model once (~90MB) — 42%"), and the Play button mirrors it ("⏳ Loading voices… 42%") because that is where the visitor is looking.
+- **No phantom progress:** the progress bar counted a sentence as "read" the moment it was queued — a failed first Play jumped to 3% with nothing played. Progress now counts only sentences whose audio actually started (`state.progressSentence`, set when `audio.play()` resolves), for both the free and premium engines. Finish/seek/reset update it consistently.
+- **Service worker:** cache bumped to `auralis-v1.4.2`. Footer shows `v1.4.2`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.2
+git push origin v1.4.2
+gh release create v1.4.2 --title "v1.4.2 — the real error, hardened WASM fallback, real progress" --notes-file /tmp/auralis-v1.4.2-release-notes.md
+```
+
 ### v1.4.1 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.1 — fixes the four failures the v1.4.0 real-browser check found**

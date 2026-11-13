@@ -269,6 +269,10 @@ body.reader-mode.reader-dark .reader-byline { color: #B9B2A2; }
  * a failed listen never silently looks finished. */
 .playback-error { margin: 10px 30px 0; color: #A33D2E; font-weight: 650; font-size: .92rem; }
 .playback-error[hidden] { display: none; }
+/* v1.4.2: the "Details:" line under a playback/download failure — the
+   actual error message, small and muted, so a real failure can be
+   diagnosed instead of guessed at. */
+.error-detail { display: block; margin-top: 4px; font-weight: 400; font-size: .82rem; color: #6b5a52; word-break: break-word; }
 
 .player {
   position: sticky; top: 71px; z-index: 20; margin: 18px 0 0;

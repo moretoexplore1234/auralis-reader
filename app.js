@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.1";
+  var APP_VERSION = "v1.4.2";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -133,7 +133,8 @@
     sentences: [],         // { text, paraIndex, startWord, wordCount }
     totalWords: 0,
     clutterRemoved: 0,     // clutter blocks stripped by extraction
-    currentSentence: -1,
+    currentSentence: -1,   // sentence highlighted as "current" (may be loading)
+    progressSentence: -1,  // last sentence whose audio actually STARTED playing — this is what the progress bar counts (v1.4.2: a sentence that only failed to load must never count as "read")
     playing: false,
     paused: false,
     engine: "browser",     // "browser" | "free" | "premium"
@@ -216,6 +217,7 @@
     state.sentences = [];
     state.totalWords = 0;
     state.currentSentence = -1;
+    state.progressSentence = -1; // new article: nothing has played yet (v1.4.2)
     state.paragraphs.forEach(function (para, pi) {
       splitSentences(para).forEach(function (s) {
         var wc = wordsOf(s);
@@ -328,7 +330,7 @@
   }
 
   function updateProgress() {
-    var done = state.currentSentence < 0 ? 0 : state.sentences.slice(0, state.currentSentence + 1).reduce(function (a, s) { return a + s.wordCount; }, 0);
+    var done = state.progressSentence < 0 ? 0 : state.sentences.slice(0, state.progressSentence + 1).reduce(function (a, s) { return a + s.wordCount; }, 0);
     var pct = state.totalWords ? Math.round((done / state.totalWords) * 100) : 0;
     $("progressFill").style.width = pct + "%";
     $("progressText").textContent = pct + "% read · " + done + " of " + state.totalWords + " words";
@@ -1167,6 +1169,10 @@
    * non-Edge browsers (studio voices via a free key still work). */
   var KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
   var KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+  // The transformers.js module kokoro-js itself imports (same
+  // jsDelivr URL, so the same module instance): used only to set the
+  // WASM thread count before a WASM load (see configureWasmEnv).
+  var TRANSFORMERS_CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
   var DEFAULT_KOKORO_VOICE = "af_heart";
   var KOKORO_VOICES = {
     en: [
@@ -1585,9 +1591,17 @@
     loading: null,       // in-flight load promise
     failed: false,       // load failed — do not retry silently
     failReason: "",
+    failDetail: "",      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
     deviceTriedWasm: false, // the WASM fallback load was already tried
     preferredDevice: null   // "webgpu" | "wasm" — once WASM wins, stay on it
   };
+  // The raw error, trimmed to one short line for display. Never a
+  // stack trace, never unbounded — error strings from onnxruntime can
+  // run long and can contain a file path.
+  function rawErrorDetail(err) {
+    var m = String((err && err.message) || err || "").replace(/\s+/g, " ").trim();
+    return m ? m.slice(0, 200) : "";
+  }
   // A raw onnxruntime/WebGPU error ("[webgpu] Error: Failed to get
   // GPU adapter…") means nothing to a visitor. Translate it to plain
   // language; anything else passes through (capped).
@@ -1613,13 +1627,48 @@
     var box = kokoroLoadBox();
     if (box) box.hidden = true;
   }
-  function kokoroFail(reason) {
+  function kokoroFail(reason, rawErr) {
     kokoro.failed = true;
     kokoro.failReason = reason;
+    kokoro.failDetail = rawErrorDetail(rawErr);
     kokoro.loading = null;
     state.kokoroFailed = true;
+    // Log the FULL error to the console: v1.4.1 proved the app's
+    // generic message hides the cause — a browser check with DevTools
+    // open can now read exactly what onnxruntime said.
+    try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro load failed:", rawErr); } catch (e) {}
     hideKokoroLoading();
     updateVoiceEmptyState();
+  }
+  // Force single-thread WASM before a WASM load. What the library
+  // source actually says (verified against onnxruntime-web
+  // 1.22.0-dev): when the page is NOT cross-origin isolated —
+  // GitHub Pages sends no COOP/COEP headers, so Auralis never is —
+  // ort already defaults numThreads to 1 and falls back to
+  // single-threading with a warning, so multi-threading was NOT the
+  // cause of the v1.4.1 WASM failure. This explicit 1 is belt and
+  // braces: it removes the one configuration that cannot work here,
+  // and it costs nothing. Best-effort and never blocking: if the
+  // transformers module cannot be imported (odd runtime, QA mock
+  // loader), the load proceeds anyway. The result is recorded on
+  // window.__AURALIS_WASM_ENV ("applied" | "mock-loader" |
+  // "unavailable") so a QA run can assert the attempt was made.
+  function configureWasmEnv() {
+    try { if (typeof window !== "undefined") window.__AURALIS_WASM_ENV = window.__AURALIS_WASM_ENV || "pending"; } catch (e) {}
+    return Promise.resolve().then(function () {
+      if (typeof window === "undefined" || typeof window.__AURALIS_KOKORO_LOADER === "function") {
+        try { window.__AURALIS_WASM_ENV = "mock-loader"; } catch (e) {}
+        return;
+      }
+      return import(TRANSFORMERS_CDN).then(function (mod) {
+        if (mod && mod.env && mod.env.backends && mod.env.backends.onnx && mod.env.backends.onnx.wasm) {
+          mod.env.backends.onnx.wasm.numThreads = 1;
+        }
+        try { window.__AURALIS_WASM_ENV = "applied"; } catch (e) {}
+      });
+    }).catch(function () {
+      try { window.__AURALIS_WASM_ENV = "unavailable"; } catch (e) {}
+    });
   }
   // Load the Kokoro model (once per page). `onProgress` gets
   // { label, pct } for the loading UI. Test seam: if the harness sets
@@ -1649,7 +1698,9 @@
       // Test seam: if the harness sets window.__AURALIS_KOKORO_LOADER,
       // it replaces the CDN import + from_pretrained step, so QA can
       // simulate a WebGPU failure followed by a WASM success.
-      return Promise.resolve().then(function () {
+      // A WASM attempt first configures single-thread WASM (above);
+      // a WebGPU attempt skips it.
+      var run = function () { return Promise.resolve().then(function () {
         var opts = {
           dtype: "q8",
           device: deviceName,
@@ -1658,11 +1709,26 @@
             var label = "Loading the on-device voices…";
             var pct = null;
             if (typeof p.progress === "number") pct = Math.round(p.progress);
-            if (p.status === "downloading") label = "Downloading the voice model once (~90MB)" + (p.file ? " — " + String(p.file).split("/").pop() : "") + "…";
+            // transformers.js v3 progress statuses (verified against
+            // the 3.5.1 bundle): initiate / download / progress /
+            // done / ready. The old "downloading"/"loading" labels
+            // never matched anything, so no percentage ever showed
+            // during a real 30s download (v1.4.1). "downloading" is
+            // kept as an alias because the QA loader mock uses it.
+            if (p.status === "initiate") label = "Starting the voice download…";
+            else if (p.status === "download") label = "Downloading the voice model once (~90MB)" + (p.file ? " — " + String(p.file).split("/").pop() : "") + "…";
+            else if (p.status === "progress" || p.status === "downloading") label = "Downloading the voice model once (~90MB)" + (pct !== null ? " — " + pct + "%" : "") + (p.file ? " (" + String(p.file).split("/").pop() + ")" : "") + "…";
+            else if (p.status === "done") label = "Downloaded — loading the voice model…";
+            else if (p.status === "ready") label = "Voices ready.";
             else if (p.status === "loading") label = "Loading the voice model…";
-            else if (p.status === "done") label = "Voices ready.";
             if (onProgress) onProgress({ label: label, pct: pct });
             showKokoroLoading(label, pct);
+            // The visitor is looking at the Play button, not the
+            // Voices section where the load box lives — mirror the
+            // percentage there while a play is waiting on the model.
+            if (state.playing && state.engine === "free" && !kokoro.tts) {
+              setPlayButtonLabel(pct !== null ? "⏳ Loading voices… " + pct + "%" : "⏳ Loading voices…");
+            }
           }
         };
         if (typeof window !== "undefined" && typeof window.__AURALIS_KOKORO_LOADER === "function") {
@@ -1681,6 +1747,9 @@
           return KokoroTTS.from_pretrained(KOKORO_MODEL, opts);
         });
       });
+      };
+      if (deviceName === "wasm") return configureWasmEnv().then(run);
+      return run();
     }
     kokoro.loading = attempt(firstDevice).catch(function (err) {
       if (firstDevice === "webgpu" && !kokoro.deviceTriedWasm) {
@@ -1698,7 +1767,7 @@
       return tts;
     }).catch(function (err) {
       kokoro.loading = null;
-      kokoroFail(plainKokoroError(err));
+      kokoroFail(plainKokoroError(err), err);
       throw new Error(kokoro.failReason);
     });
     return kokoro.loading;
@@ -1825,18 +1894,31 @@
     };
     tick();
   }
+  // Show the persistent playback-error box: the plain reason as the
+  // headline, plus — when we have one — a small "Details:" line with
+  // the ACTUAL error message (v1.4.2). v1.4.1 proved the generic
+  // message alone hides the cause; the details line is what a
+  // browser check (or Carl, tapping it) needs to see. Toasts stay
+  // plain-language only. `detail` is escaped, never raw HTML.
+  function showPlaybackError(reason, detail) {
+    var err = $("playbackError");
+    if (!err) return;
+    err.hidden = false;
+    var html = esc(reason);
+    if (detail) html += "<span class=\"error-detail\">Details: " + esc(detail) + "</span>";
+    err.innerHTML = html;
+  }
   // A failed listen stops HERE, on this sentence, with a loud reason.
   // It never advances through errors to 100% and never toasts
   // "Finished" unless every sentence actually played.
-  function failPlayback(reason) {
+  function failPlayback(reason, detail) {
     state.playing = false; state.paused = false;
     clearTimeout(state.freeTimer); clearTimeout(state.premiumTimer); clearTimeout(state.wordTimer);
     if (state.freeAudio) { try { state.freeAudio.pause(); } catch (e) {} state.freeAudio = null; }
     if (state.premiumAudio) { try { state.premiumAudio.pause(); } catch (e) {} state.premiumAudio = null; }
     edgeClose();
     setPlayButton(false);
-    var err = $("playbackError");
-    if (err) { err.hidden = false; err.textContent = "Playback failed — " + reason + " Tap Play to retry."; }
+    showPlaybackError("Playback failed — " + reason + " Tap Play to retry.", detail);
     updateProgress();
     toast("Playback failed — " + reason + " Tap Play to retry.");
   }
@@ -1853,7 +1935,10 @@
       var s = state.sentences[idx];
       state.currentSentence = idx;
       highlightSentence(idx);
-      updateProgress();
+      // NOTE (v1.4.2): updateProgress is NOT called here. The sentence
+      // is only "read" once its audio actually starts playing — the
+      // old code counted it the moment it was queued, so a failed
+      // first Play jumped the bar to 3% with nothing played.
       state.freeAudio = null;
       // While the on-device model is still loading (first play), the
       // Play button says so right where the visitor is looking —
@@ -1870,14 +1955,21 @@
         audio.onended = function () { idx++; next(); };
         audio.onerror = function () { failPlayback("The audio for this sentence failed to play."); };
         if (state.paused) return; // resume will play it
-        audio.play().catch(function () { failPlayback("Audio playback was blocked by the browser — tap Play again."); });
-      }).catch(function () {
+        audio.play().then(function () {
+          // Audio actually started: only now does this sentence
+          // count toward the progress bar.
+          state.progressSentence = idx;
+          updateProgress();
+        }).catch(function () { failPlayback("Audio playback was blocked by the browser — tap Play again."); });
+      }).catch(function (err) {
         // No human-sounding free engine could play. Never fall back
-        // to a robotic voice — say so honestly instead.
+        // to a robotic voice — say so honestly instead, with the
+        // real error as a details line (v1.4.2).
+        try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Play failed:", err); } catch (e) {}
         state.playing = false; state.paused = false;
         setPlayButton(false);
         updateVoiceEmptyState();
-        failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.");
+        failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.", kokoro.failDetail || rawErrorDetail(err));
       });
     }
     next();
@@ -1902,6 +1994,7 @@
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function (err) {
+      try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro preview failed:", err); } catch (e) {}
       toast("Couldn't load the on-device voices (" + plainKokoroError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
     });
   }
@@ -1956,7 +2049,7 @@
     var wasPlaying = state.playing && !state.paused;
     stopPlayback(true);
     if (wasPlaying) { if (premiumActive()) playPremium(target); else playFree(target); }
-    else { state.currentSentence = target; highlightSentence(target); updateProgress(); }
+    else { state.currentSentence = target; state.progressSentence = target; highlightSentence(target); updateProgress(); }
   }
 
   // Sleep timer: stops playback after N minutes.
@@ -1987,7 +2080,7 @@
   }
   // Stop means back to the start: progress resets to 0%.
   function resetProgress() {
-    state.currentSentence = -1; state.finished = false;
+    state.currentSentence = -1; state.progressSentence = -1; state.finished = false;
     clearHighlight();
     var err = $("playbackError"); if (err) err.hidden = true;
     updateProgress();
@@ -1996,6 +2089,7 @@
     stopPlayback(true);
     state.finished = true;
     state.currentSentence = state.sentences.length - 1;
+    state.progressSentence = state.sentences.length - 1;
     updateProgress();
     clearHighlight();
     toast("Finished — nicely listened. ☕");
@@ -2095,7 +2189,8 @@
       var s = state.sentences[idx];
       state.currentSentence = idx;
       highlightSentence(idx);
-      updateProgress();
+      // NOTE (v1.4.2): no updateProgress() here — a sentence counts
+      // as read only once its audio actually starts (see playFree).
       // Approximate word highlighting from estimated duration.
       var words = s.text.split(/\s+/).filter(Boolean);
       var estMs = (words.length / (175 * currentRate())) * 60000;
@@ -2117,7 +2212,7 @@
         audio.playbackRate = 1; // premium audio is pre-rendered at natural speed
         audio.onended = function () { URL.revokeObjectURL(url); idx++; next(); };
         audio.onerror = function () { toast("Premium audio failed to play — using the free Microsoft AI voice instead."); state.playing = false; playFree(idx); };
-        audio.play().catch(function () { toast("Audio playback was blocked — tap play again."); state.playing = false; setPlayButton(false); });
+        audio.play().then(function () { state.progressSentence = idx; updateProgress(); }).catch(function () { toast("Audio playback was blocked — tap play again."); state.playing = false; setPlayButton(false); });
       }).catch(function (err) {
         toast("Premium voice failed (" + (err && err.message ? err.message : "error") + ") — using the free Microsoft AI voice instead.");
         state.playing = false;
@@ -2209,6 +2304,11 @@
         state.downloading = false;
         hideDownloadProgress();
         updateDownloadLabel();
+        // Toast stays plain-language; the persistent error box
+        // carries the real error as a details line (v1.4.2), and the
+        // full error goes to the console for diagnosis.
+        try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Download render failed:", err); } catch (e) {}
+        showPlaybackError("Couldn't render the audio file (" + plainKokoroError(err) + "). Try again, or switch to the free on-device voice.", kokoro.failDetail || rawErrorDetail(err));
         toast("Couldn't render the audio file (" + plainKokoroError(err) + "). Try again, or switch to the free on-device voice.");
       });
     }
@@ -2251,10 +2351,12 @@
       return;
     }
     if (state.playing && state.paused) {
-      if (state.engine === "premium" && state.premiumAudio) { state.premiumAudio.play(); state.paused = false; setPlayButton(true); }
+      if (state.engine === "premium" && state.premiumAudio) { var pp1 = state.premiumAudio.play(); state.paused = false; setPlayButton(true); if (pp1 && pp1.then) pp1.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
       else if (state.engine === "free") {
         state.paused = false; setPlayButton(true);
-        if (state.freeAudio) state.freeAudio.play().catch(function () {});
+        // Resume: the sentence counts only once its audio actually
+        // resumes (v1.4.2 — same rule as a fresh Play).
+        if (state.freeAudio) { var pp2 = state.freeAudio.play(); if (pp2 && pp2.then) pp2.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
       }
       return;
     }
