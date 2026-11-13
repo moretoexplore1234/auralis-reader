@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.3.0";
+  var APP_VERSION = "v1.3.1";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -199,8 +199,11 @@
   /* ---------------- text model: paragraphs -> sentences -> words ---------------- */
   function splitSentences(text) {
     // Split on sentence-ending punctuation followed by space + capital/quote,
-    // keeping abbreviations reasonably intact.
-    var parts = text.match(/[^.!?]+[.!?]+["'”)]*\s*|[^.!?]+$/g) || [text];
+    // keeping abbreviations reasonably intact. The punctuation must be
+    // followed by whitespace or end-of-text — otherwise a dot inside a
+    // token (www.example.com, hello@example.org, U.S.A.) would be torn
+    // into fragments that no URL/email stripper can recognise afterwards.
+    var parts = text.match(/[^.!?]+[.!?]+["'”)]*(?=\s+|$)|[^.!?]+$/g) || [text];
     return parts.map(function (p) { return p.trim(); }).filter(Boolean);
   }
 
@@ -581,11 +584,16 @@
   function stripChromeFromKept(kept) {
     var out = [], chromeRemoved = [];
     kept.forEach(function (p) {
-      var r = stripUiChrome(p.text);
-      // URLs are never spoken: strip every raw URL, bare domain and
-      // email address, and drop sentences that only point at a link.
-      var c = cleanSpokenText(r.text);
-      var allRemoved = r.removed.concat(c.removed);
+      // URLs FIRST, on the raw paragraph, while the links are still
+      // intact: splitting sentences first tears "www.x.example" and
+      // "https://example.com/…" at their dots into fragments no URL
+      // regex can recognise afterwards (v1.3.0 bug — www/email survived
+      // as "www. cityparks. example"). Only then strip UI-chrome
+      // sentences from the cleaned text.
+      var c0 = cleanSpokenText(p.text);
+      var r = stripUiChrome(c0.text);
+      var c = { text: r.text, removed: c0.removed.concat(r.removed) };
+      var allRemoved = r.removed.concat(c0.removed);
       if (!c.text) {
         chromeRemoved.push({ text: p.text, index: p.index, score: 0, chrome: true });
       } else {

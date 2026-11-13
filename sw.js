@@ -5,7 +5,7 @@
  * is only an offline fallback. Cache-first for the rest (icons etc.).
  * Bump CACHE on every release so old caches are deleted on activate.
  * No tracking, no analytics. */
-var CACHE = "auralis-v1.3.0";
+var CACHE = "auralis-v1.3.1";
 var SHELL = [
   "./",
   "./index.html",
