@@ -40,6 +40,24 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.3 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.3 — the WASM fallback actually runs now (root cause found in the library)**
+
+Why: v1.4.2 shipped (commit eeef79f, Release live) and its new Details line finally revealed the exact error in cloud Chrome: "no available backend found. ERR: [webgpu] Error: Failed to get GPU adapter." — the SAME error for Play and Download. The key fact: the error was STILL a WebGPU error, which proved the WASM fallback was NEVER REACHED in a real browser. Reading the transformers.js 3.5.1 source found why: `createInferenceSession` caches a failed first session creation in a module-level `wasmInitPromise` that is never reset (`if (wasmInitPromise) await wasmInitPromise;` … `wasmInitPromise ??= sessionPromise`). A same-module WASM retry therefore awaits the rejected promise and re-throws the original WebGPU error without ever creating a WASM session. The jsdom harness never caught this because its mock loader bypasses the real transformers module. This release fixes it at the root:
+
+- **Pre-flight GPU probe:** before the first model load, the app asks `navigator.gpu.requestAdapter()` (bounded by a 4s timeout). No adapter → the first load goes straight to WASM, so a doomed WebGPU session is never created and the library state is never poisoned. An adapter → WebGPU first, as before. The probe outcome is recorded on `window.__AURALIS_GPU_PROBE` for QA.
+- **Fresh-module retry:** if a WebGPU load still fails with a backend error, the ONE retry runs on WASM loaded from a fresh module graph — kokoro-js via esm.sh (`https://esm.sh/kokoro-js@1.2.1`, verified CORS `*`, exports KokoroTTS) instead of jsDelivr — so the retry's transformers instance has fresh, unpoisoned state and the WASM session is actually created. The winning graph is remembered for later loads in the page. If the retry also fails, the Details line now shows the WASM error, not the WebGPU one.
+- **Play button loading state (investigated, not a regression):** the v1.4.2 check said the button "never changed from ▶ Play". The label IS set synchronously on tap in `playFree` (verified in code and in QA) — the checker's failure was sub-second (model cached from the earlier diagnostic run, session creation failing immediately), so the loading state was visible only briefly before the error reset the button. QA now asserts the label synchronously after a tap with a slow loader.
+- **Service worker:** cache bumped to `auralis-v1.4.3`. Footer shows `v1.4.3`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.3
+git push origin v1.4.3
+gh release create v1.4.3 --title "v1.4.3 — the WASM fallback actually runs" --notes-file /tmp/auralis-v1.4.3-release-notes.md
+```
+
 ### v1.4.2 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.2 — the real error, a WASM fallback that cannot silently fail, real download %, no phantom progress**

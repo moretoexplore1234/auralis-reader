@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.2";
+  var APP_VERSION = "v1.4.3";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -1169,10 +1169,24 @@
    * non-Edge browsers (studio voices via a free key still work). */
   var KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
   var KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+  // Alternate kokoro-js entry (esm.sh) — a DIFFERENT module graph
+  // from jsDelivr, so its transformers.js instance is a different
+  // object. Used ONLY for the retry after a failed WebGPU load (see
+  // ensureKokoro): transformers.js 3.5.1 caches a failed first
+  // session creation in a module-level `wasmInitPromise` that is
+  // never reset, so a same-graph WASM retry re-throws the original
+  // WebGPU error without ever trying WASM — that is exactly what
+  // v1.4.0–v1.4.2 did in headless Chrome. The alt graph has fresh
+  // module state, so the retry actually runs. Verified Nov 13, 2026:
+  // esm.sh serves kokoro-js 1.2.1 with CORS `*` and re-exports
+  // KokoroTTS; its transformers import resolves under esm.sh.
+  var KOKORO_CDN_ALT = "https://esm.sh/kokoro-js@1.2.1";
   // The transformers.js module kokoro-js itself imports (same
   // jsDelivr URL, so the same module instance): used only to set the
   // WASM thread count before a WASM load (see configureWasmEnv).
   var TRANSFORMERS_CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
+  // Same, for the esm.sh module graph (KOKORO_CDN_ALT above).
+  var TRANSFORMERS_CDN_ALT = "https://esm.sh/@huggingface/transformers@3.5.1";
   var DEFAULT_KOKORO_VOICE = "af_heart";
   var KOKORO_VOICES = {
     en: [
@@ -1593,7 +1607,8 @@
     failReason: "",
     failDetail: "",      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
     deviceTriedWasm: false, // the WASM fallback load was already tried
-    preferredDevice: null   // "webgpu" | "wasm" — once WASM wins, stay on it
+    preferredDevice: null,   // "webgpu" | "wasm" — once WASM wins, stay on it
+    preferredCdn: null       // KOKORO_CDN_ALT once the alt graph wins a load — later loads in the page must stay on that graph, because the primary graph's transformers state is poisoned by a failed first session (see ensureKokoro)
   };
   // The raw error, trimmed to one short line for display. Never a
   // stack trace, never unbounded — error strings from onnxruntime can
@@ -1611,6 +1626,40 @@
       return "The on-device voice model couldn't load in this browser.";
     }
     return m ? m.slice(0, 160) : "The on-device voice model could not be downloaded.";
+  }
+  // Is this the "no GPU backend" class of failure (vs a network or
+  // file error)? Only backend failures get the WASM retry — a
+  // download failure would just fail the same way twice.
+  function isBackendError(err) {
+    var m = String((err && err.message) || err || "");
+    return /webgpu|gpu adapter|get gpu|onnxruntime|onnx runtime|no available backend|device.*not.*(found|available)/i.test(m);
+  }
+  // Pre-flight GPU check (v1.4.3). Ask the browser for a WebGPU
+  // adapter BEFORE creating any ONNX session: if there is none, the
+  // first load goes straight to WASM and a doomed WebGPU session is
+  // never created — which matters because transformers.js poisons
+  // itself on a failed first session (see ensureKokoro). Resolves
+  // to "adapter" | "none" | "error" | "timeout" | "unsupported" and
+  // records it on window.__AURALIS_GPU_PROBE so QA can assert which
+  // branch was taken. Bounded by a 4s timeout so a hanging
+  // requestAdapter() can never stall the first play.
+  function probeGpuAdapter() {
+    try { if (typeof window !== "undefined") window.__AURALIS_GPU_PROBE = window.__AURALIS_GPU_PROBE || "pending"; } catch (e) {}
+    function record(v) { try { if (typeof window !== "undefined") window.__AURALIS_GPU_PROBE = v; } catch (e) {} return v; }
+    if (typeof navigator === "undefined" || !navigator.gpu || typeof navigator.gpu.requestAdapter !== "function") {
+      return Promise.resolve(record("unsupported"));
+    }
+    var settled = false;
+    return new Promise(function (resolve) {
+      var timer = setTimeout(function () { if (!settled) { settled = true; resolve(record("timeout")); } }, 4000);
+      var done = function (v) { if (!settled) { settled = true; clearTimeout(timer); resolve(record(v)); } };
+      try {
+        Promise.resolve(navigator.gpu.requestAdapter()).then(
+          function (adapter) { done(adapter ? "adapter" : "none"); },
+          function () { done("error"); }
+        );
+      } catch (e) { done("error"); }
+    });
   }
   function kokoroLoadText() { return $("kokoroLoadText"); }
   function kokoroLoadFill() { return $("kokoroLoadFill"); }
@@ -1653,14 +1702,18 @@
   // loader), the load proceeds anyway. The result is recorded on
   // window.__AURALIS_WASM_ENV ("applied" | "mock-loader" |
   // "unavailable") so a QA run can assert the attempt was made.
-  function configureWasmEnv() {
+  // `transformersUrl` is the transformers module of the graph being
+  // loaded (jsDelivr primary, esm.sh for the alt-graph retry) — the
+  // setting must land on the SAME module instance kokoro-js imports.
+  function configureWasmEnv(transformersUrl) {
+    transformersUrl = transformersUrl || TRANSFORMERS_CDN;
     try { if (typeof window !== "undefined") window.__AURALIS_WASM_ENV = window.__AURALIS_WASM_ENV || "pending"; } catch (e) {}
     return Promise.resolve().then(function () {
       if (typeof window === "undefined" || typeof window.__AURALIS_KOKORO_LOADER === "function") {
         try { window.__AURALIS_WASM_ENV = "mock-loader"; } catch (e) {}
         return;
       }
-      return import(TRANSFORMERS_CDN).then(function (mod) {
+      return import(transformersUrl).then(function (mod) {
         if (mod && mod.env && mod.env.backends && mod.env.backends.onnx && mod.env.backends.onnx.wasm) {
           mod.env.backends.onnx.wasm.numThreads = 1;
         }
@@ -1686,13 +1739,25 @@
     showKokoroLoading(firstTime
       ? "First play downloads the voice model once (~90MB) — then it works offline, even on a plane. Best on Wi-Fi…"
       : "Loading the on-device voices…", 0);
-    // WebGPU first when the browser advertises it — but "advertises"
-    // is not "works": headless Chrome has navigator.gpu yet its
-    // requestAdapter() returns nothing, so from_pretrained fails
-    // with "Failed to get GPU adapter" (v1.4.0). The WASM fallback
-    // must then be TRIED, not just noted — the old code never did.
-    var firstDevice = kokoro.preferredDevice || ((typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm");
-    function attempt(deviceName) {
+    // THE BYPASS, v1.4.3 (verified against transformers.js 3.5.1
+    // source): the first attempt's device is chosen AFTER a
+    // probeGpuAdapter() call (below) — "advertises a GPU" is not
+    // "has a working GPU": headless Chrome has navigator.gpu yet its
+    // requestAdapter() returns nothing. And the WASM retry runs on a
+    // FRESH module graph (KOKORO_CDN_ALT, esm.sh). Why a fresh
+    // graph: transformers.js caches a failed first session creation
+    // in a module-level `wasmInitPromise` that is NEVER reset
+    // (createInferenceSession: `if (wasmInitPromise) await
+    // wasmInitPromise;` … `wasmInitPromise ??= sessionPromise`).
+    // v1.4.0–v1.4.2 retried on WASM in the SAME module, so the
+    // retry awaited the rejected promise and re-threw the original
+    // WebGPU error without ever creating a WASM session — the
+    // v1.4.2 Details line ("[webgpu] Error: Failed to get GPU
+    // adapter") proved the retry never ran. The probe avoids the
+    // doomed WebGPU attempt entirely; the alt graph makes the retry
+    // real even when a WebGPU attempt fails despite an adapter.
+    function attempt(deviceName, cdnUrl) {
+      cdnUrl = cdnUrl || KOKORO_CDN;
       // Promise.resolve().then() so even a synchronous import() throw
       // (odd runtimes) becomes a rejection the .catch below handles.
       // Test seam: if the harness sets window.__AURALIS_KOKORO_LOADER,
@@ -1732,7 +1797,7 @@
           }
         };
         if (typeof window !== "undefined" && typeof window.__AURALIS_KOKORO_LOADER === "function") {
-          return window.__AURALIS_KOKORO_LOADER(KOKORO_MODEL, opts);
+          return window.__AURALIS_KOKORO_LOADER(KOKORO_MODEL, opts, cdnUrl);
         }
         // No fetch (very old browser / odd runtime): the model cannot
         // be downloaded at all. The final .catch below routes this
@@ -1741,24 +1806,54 @@
         if (typeof window === "undefined" || typeof window.fetch === "undefined") {
           throw new Error("This browser can't download the on-device voice model.");
         }
-        return import(KOKORO_CDN).then(function (mod) {
+        return import(cdnUrl).then(function (mod) {
           var KokoroTTS = mod.KokoroTTS;
           if (!KokoroTTS) throw new Error("The voice library did not load.");
           return KokoroTTS.from_pretrained(KOKORO_MODEL, opts);
         });
       });
       };
-      if (deviceName === "wasm") return configureWasmEnv().then(run);
+      // A WASM attempt first configures single-thread WASM on the
+      // transformers module of the graph being loaded (jsDelivr
+      // primary, esm.sh for the alt-graph retry); a WebGPU attempt
+      // skips it.
+      if (deviceName === "wasm") return configureWasmEnv(cdnUrl === KOKORO_CDN_ALT ? TRANSFORMERS_CDN_ALT : TRANSFORMERS_CDN).then(run);
       return run();
     }
-    kokoro.loading = attempt(firstDevice).catch(function (err) {
-      if (firstDevice === "webgpu" && !kokoro.deviceTriedWasm) {
-        kokoro.deviceTriedWasm = true;
-        kokoro.preferredDevice = "wasm";
-        showKokoroLoading("The fast voice engine isn't available here — trying the standard engine…", 0);
-        return attempt("wasm");
-      }
-      throw err;
+    // The load chain. The device is chosen only after the GPU probe
+    // (skipped when a previous load already settled on WASM): an
+    // adapter means WebGPU first, anything else means WASM first —
+    // so a browser with no working GPU never creates the session
+    // that would poison transformers.js. If the WebGPU attempt fails
+    // with a backend error anyway, exactly ONE retry runs on WASM
+    // from the FRESH esm.sh module graph (never the poisoned
+    // primary graph) — and if that also fails, the Details line
+    // shows the WASM error, not the WebGPU one. Non-backend errors
+    // (network, file) fail straight away: retrying them on WASM
+    // would just fail the same way twice.
+    kokoro.loading = Promise.resolve().then(function () {
+      if (kokoro.preferredDevice) return kokoro.preferredDevice;
+      return probeGpuAdapter().then(function (probe) {
+        return probe === "adapter" ? "webgpu" : "wasm";
+      });
+    }).then(function (firstDevice) {
+      var firstCdn = kokoro.preferredCdn || KOKORO_CDN;
+      return attempt(firstDevice, firstCdn).catch(function (err) {
+        if (firstDevice === "webgpu" && !kokoro.deviceTriedWasm && isBackendError(err)) {
+          kokoro.deviceTriedWasm = true;
+          kokoro.preferredDevice = "wasm";
+          kokoro.preferredCdn = KOKORO_CDN_ALT;
+          showKokoroLoading("The fast voice engine isn't available here — trying the standard engine…", 0);
+          return attempt("wasm", KOKORO_CDN_ALT);
+        }
+        throw err;
+      }).then(function (tts) {
+        // Record which graph won, so a later re-entry in this page
+        // (e.g. the empty-audio reload in kokoroSynthesize) stays on
+        // the working graph instead of the poisoned primary one.
+        kokoro.preferredCdn = (firstDevice === "webgpu" && kokoro.deviceTriedWasm) ? KOKORO_CDN_ALT : firstCdn;
+        return tts;
+      });
     }).then(function (tts) {
       kokoro.tts = tts;
       kokoro.loading = null;
