@@ -40,6 +40,29 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.0 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.0 — Kokoro voices on your device, no timestamps, download the article as audio**
+
+Why: v1.3.1 did NOT fix the voice problem in practice. Carl (Nov 13, 2026, on his Pixel/Android Chrome and in the Muse in-app browser) reported the Microsoft voices show a "blocked by the browser" error, the voice that DOES play is even MORE robotic, and the reader reads timestamps aloud. Root cause, verified Nov 13: Microsoft rejects the Edge Read Aloud WebSocket handshake with 403 unless the User-Agent contains "Edg/", and a web page cannot set the User-Agent header on a WebSocket — so Edge voices can never work from a normal page in Chrome. The robotic voice was the Google Translate TTS fallback (one flat voice per language). This release fixes the root causes:
+
+- **Kokoro in-browser is the free engine everywhere except real Edge:** kokoro-js + `onnx-community/Kokoro-82M-v1.0-ONNX` (Apache-2.0) runs 100% on the visitor's device via Transformers.js/onnxruntime-web (WebGPU with WASM fallback), 54 voices across 9 languages, no key, no account, no credits, no limits. Loaded lazily on first Play/Preview tap (never on page load), ~90MB model download once from Hugging Face, then cached and works offline. Honest loading state with progress; if the model fails to load, the app says so and points at the free ElevenLabs/Cartesia key path — never a robotic voice.
+- **Edge transport only in real Edge:** the handshake probe runs only when `navigator.userAgent` contains "Edg/". In every other browser the Edge handshake is never attempted — no probe, no banner error — Kokoro is the free engine from the start. In real Edge, Microsoft voices stay the default; if the handshake fails there, the free engine switches to Kokoro and the banner says so.
+- **Google Translate TTS REMOVED ENTIRELY:** `googleFreeUrl`/`googleAudioChain`/`googleSentenceAudio` and every call deleted. No robotic fallback is left anywhere: no Google TTS, no `speechSynthesis`, no device voices. If no human-sounding engine can play, the app shows an honest empty state and plays nothing. (Google Cloud TTS as a BYO-key PREMIUM provider stays — a different, key-based Neural2/WaveNet product, clearly labelled premium.)
+- **Voice menu:** Kokoro voices are the free default in non-Edge browsers — English 8 max (Heart ★ Recommended, Sarah, Bella, Adam, Michael, Onyx, Emma, George), each with a plain description + "Best for:" line; other languages get their own small curated Kokoro sets (es/fr/hi/it/ja/pt/zh; no Kokoro voices exist for German, Hebrew or Arabic). In Edge, the Microsoft cards stay. Premium (ElevenLabs/Cartesia/OpenAI/Azure/Google Cloud, BYO key) stays as the studio tier, with a short in-app guide for getting a free ElevenLabs (10k/mo) or Cartesia (20k/mo) key — one tap to their site, paste once, localStorage only.
+- **Timestamps never spoken:** standalone timestamp/date lines and inline metadata — "10:45 AM", "3:27 PM", "12:34", "Nov 13, 2026", "Friday, November 13, 2026", "Published/Updated/Posted … [date/time]", "2 hours ago", "5 min read" — are stripped in `cleanSpokenText` before sentence-splitting, and byline/date lines are dropped in extraction. Times that are the substance of a sentence ("the meeting starts at 3 PM") are kept. Cut timestamps count in the clutter tally.
+- **Core content only, 11Reader-style:** extraction drops byline/date/timestamp lines, image captions ("Photo: …", "Caption: …"), "Related articles" sections, author bios, comment sections, "Read next" blocks, newsletter boxes, and any paragraph that is mostly metadata. Only the article body is read.
+- **⬇ Download audio:** a button in the Reader (next to Play) renders the whole loaded article — same cleaned, core-only text, in the selected voice — into ONE audio file named after the article title (e.g. `why-mornings-feel-longer.mp3`). WAV with the free on-device voices (sentences synthesized and joined as samples), MP3 with Edge/premium voices (MP3 frames concatenated). Honest progress ("Rendering audio… sentence 4 of 22") with a Cancel button. Only human-sounding engines, never a robotic one.
+- **Hugging Face, local, no credits:** the Voices section labels the free Kokoro voices "Runs on your device — free forever, no credits, no account (model from Hugging Face, downloaded once)".
+- **Service worker:** cache bumped to `auralis-v1.4.0`. Footer shows `v1.4.0`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.0
+git push origin v1.4.0
+gh release create v1.4.0 --title "v1.4.0 — Kokoro voices on your device, no timestamps, download audio" --notes-file /tmp/auralis-v1.4-release-notes.md
+```
+
 ### v1.3.0 release notes (local build — not yet pushed/released)
 
 **Auralis v1.3.0 — no silent fallback, no links read aloud, voices you can actually choose**

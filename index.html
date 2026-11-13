@@ -159,6 +159,12 @@
             <button class="btn btn-dark btn-small" type="button" id="summarizeBtn">✦ Summarize this</button>
             <button class="btn btn-dark btn-small" type="button" id="readerModeBtn">📖 Reader mode</button>
             <button class="btn btn-dark btn-small" type="button" id="copyTextBtn">⧉ Copy text</button>
+            <button class="btn btn-dark btn-small" type="button" id="downloadAudioBtn">⬇ Download audio (WAV)</button>
+          </div>
+          <div class="download-progress" id="downloadProgressBox" hidden>
+            <div class="download-progress-bar"><div class="download-progress-fill" id="downloadProgressFill"></div></div>
+            <span id="downloadProgressText">Rendering audio…</span>
+            <button class="btn btn-dark btn-small" type="button" id="downloadCancelBtn">Cancel</button>
           </div>
         </div>
 
@@ -193,7 +199,7 @@
       </div>
       <div class="steps">
         <div class="step"><div class="step-num">01</div><h3>Paste a link</h3><p>Any public article or page. Auralis extracts the real article text and strips the nav, ads and clutter.</p></div>
-        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Microsoft AI voices (Aria, Jenny, Guy…) are free, built in and already the default — no key, no credits. Add an ElevenLabs or Cartesia key later if you want a studio voice.</p></div>
+        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Free on-device voices (Kokoro — Heart, Sarah, Bella…) are free, built in and already the default — no key, no credits. In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the default instead. Add an ElevenLabs or Cartesia key later if you want a studio voice.</p></div>
         <div class="step"><div class="step-num">03</div><h3>Listen &amp; ask</h3><p>Follow along with word highlighting, save it to your Library, or ask one of your AI apps to summarise it.</p></div>
       </div>
     </div>
@@ -210,8 +216,8 @@
             <tr><td>Hosting (GitHub Pages)</td><td>GitHub</td><td>$0</td></tr>
             <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
             <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
-            <tr><td>Microsoft AI voices (Edge Read Aloud)</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
-            <tr><td>Google TTS fallback — last resort only, not a voice choice</td><td>Google</td><td>$0 · single voice</td></tr>
+            <tr><td>Microsoft AI voices (Edge Read Aloud) — in Microsoft Edge</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
+            <tr><td>Kokoro on-device voices — every other browser (model from Hugging Face, downloaded once)</td><td>Your device</td><td>$0 · unlimited, no key</td></tr>
             <tr><td>ElevenLabs (10k chars/mo) / Cartesia (20k credits/mo)</td><td>Optional, your free key</td><td>$0 on the free tier</td></tr>
             <tr><td>OpenAI / Azure / Google Cloud voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
           </tbody>
@@ -283,9 +289,9 @@
       <div class="panel-head">
         <p class="eyebrow">Voices</p>
         <h2>Free AI voices now. Studio voices if you want them.</h2>
-        <p>Microsoft AI voices are free, unlimited and already the default — no key, no credits, no account. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
+        <p>Free voices run on your device — free forever, no credits, no account (model from Hugging Face, downloaded once). In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the free default instead. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
         <div class="tier-strip" aria-label="Voice tiers">
-          <span class="tier-chip tier-free">★ Unlimited &amp; free — Microsoft AI voices, no key</span>
+          <span class="tier-chip tier-free">★ Unlimited &amp; free — on-device Kokoro voices (Microsoft AI voices in Edge), no key</span>
           <span class="tier-chip">Free monthly credits — ElevenLabs 10k/mo · Cartesia 20k/mo</span>
           <span class="tier-chip">Your key, pay your provider — OpenAI · Azure · Google Cloud</span>
         </div>
@@ -293,10 +299,15 @@
       </div>
       <div class="voice-picker">
         <div class="voice-warn edge-down-banner" id="edgeDownBanner" hidden>
-          <strong>Microsoft voices aren't answering in this browser.</strong>
-          <p>You're hearing the single free Google voice instead — that's why every voice sounds the same. For the real Microsoft voices (Aria, Jenny, Guy…), open this page in <strong>Microsoft Edge</strong>, or add a free ElevenLabs or Cartesia key below. The Microsoft voice cards are greyed out until they can play.</p>
+          <strong>Microsoft voices aren't answering in Microsoft Edge.</strong>
+          <p>You're hearing the free on-device Kokoro voices instead — same human-sounding quality, still free. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs or Cartesia key below for studio voices.</p>
           <button class="btn btn-gold btn-small" type="button" id="edgeRetryBtn">↻ Retry Microsoft voices</button>
         </div>
+        <div class="kokoro-load" id="kokoroLoadBox" hidden>
+          <div class="kokoro-load-bar"><div class="kokoro-load-fill" id="kokoroLoadFill"></div></div>
+          <span id="kokoroLoadText">Loading the on-device voices…</span>
+        </div>
+        <p class="muted">Free voices: <strong>Kokoro</strong> — runs on your device, free forever, no credits, no account (model from Hugging Face, downloaded once, ~90MB, then works offline). In Microsoft Edge, the free voices are Microsoft's (Aria, Jenny, Guy…).</p>
         <div class="voice-lang-row">
           <label for="voiceLangSelect">Language</label>
           <select id="voiceLangSelect" aria-label="Voice language">
@@ -325,7 +336,7 @@
           <h3 style="margin-top:10px">Premium voice provider</h3>
           <p>Choose a provider, paste your key, test it. Auralis uses it only for narration you start.</p>
           <div class="provider-grid" role="group" aria-label="Premium voice provider">
-            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Free AI voices</strong><span>Free · default · Microsoft AI voices</span></button>
+            <button type="button" class="provider-card" data-provider="none" aria-pressed="true"><strong>Free AI voices</strong><span>Free · default · on-device voices (Microsoft in Edge)</span></button>
             <button type="button" class="provider-card" data-provider="elevenlabs" aria-pressed="false"><strong>ElevenLabs</strong><span>Most lifelike · uses your ElevenLabs credits</span></button>
             <button type="button" class="provider-card" data-provider="cartesia" aria-pressed="false"><strong>Cartesia Sonic</strong><span>Closest rival to ElevenLabs · free 20k credits/mo</span></button>
             <button type="button" class="provider-card" data-provider="openai" aria-pressed="false"><strong>OpenAI TTS</strong><span>Smooth studio voices · your key</span></button>
@@ -334,13 +345,21 @@
             <button type="button" class="provider-card" data-provider="generic-tts" aria-pressed="false"><strong>My own TTS server</strong><span>Any OpenAI-compatible endpoint · your server</span></button>
           </div>
           <div id="providerForm" style="margin-top:16px"></div>
+          <div class="free-key-guide" id="freeKeyGuide">
+            <h4>Want a studio voice for free? Get a key in 2 minutes</h4>
+            <ol>
+              <li><strong>ElevenLabs — free 10,000 credits a month:</strong> <a href="https://elevenlabs.io/" target="_blank" rel="noopener">sign up free at elevenlabs.io</a>, then open <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener">API Keys</a> and copy your key. Paste it above — it stays in this browser only.</li>
+              <li><strong>Cartesia — free 20,000 credits a month:</strong> <a href="https://play.cartesia.ai/sign-up" target="_blank" rel="noopener">sign up free at play.cartesia.ai</a>, then copy your API key from the Playground dashboard and paste it above.</li>
+            </ol>
+            <p class="muted">No card needed for either free tier. If the on-device voices ever fail to load, a free key here is the fallback — Auralis never plays a robotic voice.</p>
+          </div>
         </div>
       <div class="card clone-studio" id="cloneStudio" style="margin-top:16px">
         <span class="pill byo">Optional · Bring your own key</span>
         <h3 style="margin-top:10px">Clone Studio</h3>
         <p>Clone a voice <strong>you own or have permission to use</strong> — your own voice, or a voice you made. Upload 30 seconds to 1 minute of clean sample audio and Auralis creates the clone through ElevenLabs Instant Voice Clone or Cartesia, using your own key. The clone is then listed as a voice you can use.</p>
         <p class="muted">Only clone voices you own or have permission to use. Never download, rip or clone another company's demo audio.</p>
-        <p class="muted">Local cloning is unlimited but very slow — our own local clone runs 15–25× slower than realtime, so a full article would take hours. The Microsoft voices above are the fast unlimited option.</p>
+        <p class="muted">Local cloning is unlimited but very slow — our own local clone runs 15–25× slower than realtime, so a full article would take hours. The free on-device voices above are the fast unlimited option.</p>
         <div class="field-row">
           <div class="field"><label for="cloneProvider">Clone with</label>
             <select id="cloneProvider"><option value="elevenlabs">ElevenLabs (free tier works)</option><option value="cartesia">Cartesia (paid plan needed for cloning)</option></select>
@@ -430,7 +449,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.3.1</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.0</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>

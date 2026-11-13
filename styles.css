@@ -474,6 +474,18 @@ section[id] { scroll-margin-top: 88px; }
 .removed-row { display: flex; gap: 10px; align-items: flex-start; background: rgba(201,169,106,.08); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .removed-text { flex: 1; font-size: .9rem; color: var(--muted); }
 
+/* ---------- v1.4: Kokoro load state, audio download, free-key guide ---------- */
+.kokoro-load { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(201,169,106,.08); font-size: .92rem; }
+.kokoro-load-bar { width: 140px; height: 8px; border-radius: 999px; background: rgba(201,169,106,.25); overflow: hidden; flex-shrink: 0; }
+.kokoro-load-fill { height: 100%; width: 0; background: var(--gold); border-radius: 999px; transition: width .3s ease; }
+.download-progress { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(201,169,106,.08); font-size: .92rem; flex-wrap: wrap; }
+.download-progress-bar { width: 140px; height: 8px; border-radius: 999px; background: rgba(201,169,106,.25); overflow: hidden; flex-shrink: 0; }
+.download-progress-fill { height: 100%; width: 0; background: var(--gold); border-radius: 999px; transition: width .3s ease; }
+.free-key-guide { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(201,169,106,.06); }
+.free-key-guide h4 { margin: 0 0 8px; font-size: 1rem; }
+.free-key-guide ol { margin: 0 0 8px 20px; font-size: .93rem; }
+.free-key-guide li { margin-bottom: 6px; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .sample-grid, .app-grid, .steps, .download-grid { grid-template-columns: 1fr 1fr; }

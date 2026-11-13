@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.3.1";
+  var APP_VERSION = "v1.4.0";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -139,13 +139,13 @@
     engine: "browser",     // "browser" | "free" | "premium"
     premiumAudio: null,
     premiumTimer: null,
-    freeAudio: null,       // Audio element (or Google chain facade) for the free AI engine
+    freeAudio: null,       // Audio element for the free AI engine (Edge or Kokoro)
     freeTimer: null,
-    freeTransport: null,   // "edge" | "google" — decided on first play, per session
+    freeTransport: null,   // "edge" | "kokoro" — decided on first play, per session
     edgeFailed: false,
-    edgeDown: false,       // Microsoft voices proven unavailable in this browser — cards disabled, banner shown
-    edgeProbed: false,     // the on-load Edge handshake probe has run once
-    googleFailed: false,
+    edgeDown: false,       // Microsoft voices proven unavailable in this browser — Kokoro is the free engine instead
+    edgeProbed: false,     // the on-load Edge handshake probe has run once (Edge browsers only)
+    kokoroFailed: false,   // the on-device Kokoro model could not be loaded
     finished: false,       // the current article actually played to the end
     removedParagraphs: [], // paragraphs the Content Radar cut (restorable)
     radarKeptIndices: [],  // original paragraph index of each kept paragraph
@@ -424,10 +424,13 @@
 
   // Paragraphs that are navigation / promo, never body text — even when
   // long enough to pass the length filter.
-  var CLUTTER_PARA_RE = /^(read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|advertisement|sponsored|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: )/i;
+  var CLUTTER_PARA_RE = /^(read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|advertisement|sponsored|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio)/i;
   function isClutterParagraph(t) {
     if (CLUTTER_PARA_RE.test(t)) return true;
     if (/^read more[:\s]/i.test(t)) return true;
+    if (TIMESTAMP_ONLY_RE.test(t)) return true; // a line that is only a date/time
+    if (/^\s*by\s+\S.{1,60}$/i.test(t) && !/[.!?]/.test(t)) return true; // byline line
+    if (/^\s*(published|updated|posted|last updated)\b/i.test(t)) return true; // dateline
     if (/^\s*\d+\s*(of|\/)\s*\d+\s*$/.test(t)) return true; // "1 of 5" pagination
     if (/^\s*\d+\s*$/.test(t)) return true; // bare page number
     return false;
@@ -448,6 +451,7 @@
       "[class*='newsletter'], [class*='cookie'], [class*='share'], [class*='social'], " +
       "[class*='comment'], [class*='related'], [class*='recommend'], [class*='read-more'], [class*='readmore'], " +
       "[class*='more-from'], [class*='also-like'], [class*='author-bio'], [class*='author-box'], [class*='byline-box'], " +
+      "[class*='byline'], [class*='dateline'], [class*='timestamp'], [class*='article-meta'], [class*='post-meta'], [class*='entry-meta'], time, " +
       "[class*='promo'], [class*='outbrain'], [class*='taboola'], [class*='trending'], [class*='sidebar'], " +
       "[class*='menu'], [class*='toolbar'], [class*='caption'], [class*='credit']";
     var removed = doc.querySelectorAll(junk);
@@ -509,7 +513,18 @@
    * any paragraph with one tap. The radar works fully with no key and
    * no account; the Hugging Face double-check below is strictly optional.
    */
-  var RADAR_BOILERPLATE = /^(show this thread|show replies|promoted|advertisement|sponsored|read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: )/i;
+  var RADAR_BOILERPLATE = /^(show this thread|show replies|promoted|advertisement|sponsored|read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio)/i;
+  // Timestamps and datelines are metadata, never substance. A time
+  // that is the substance of a sentence ("the meeting starts at
+  // 3 PM") is kept — bare hour times without minutes are never
+  // touched, and dates/times are only stripped where they sit as
+  // metadata: at a sentence/paragraph start, after Published /
+  // Updated / Posted, standalone, or as "min read" / "X ago".
+  var MONTHS_RE = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
+  var DATE_RE = "(?:" + MONTHS_RE + "\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{1,2}\\s+" + MONTHS_RE + "\\.?\\s+\\d{4})";
+  var TIME_RE = "\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM|am|pm)?";
+  var AGO_RE = "\\d+\\s*(?:second|minute|hour|day|week|month|year)s?\\s+ago";
+  var TIMESTAMP_ONLY_RE = new RegExp("^\\s*(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + "|\\d{1,2}\\s*(?:AM|PM|am|pm))\\s*[.!?]?\\s*$", "i");
   var RADAR_KEEP = 25; // score >= 25 is core content
   function scoreParagraph(p, isX) {
     var text = p.text || "";
@@ -521,6 +536,11 @@
     if (/[.!?]["'\u201d)]?\s*$/.test(text)) score += 10; // ends like a real sentence
     if (RADAR_BOILERPLATE.test(text)) score -= 60;
     if (CLUTTER_PARA_RE.test(text)) score -= 60;
+    if (TIMESTAMP_ONLY_RE.test(text)) score -= 60; // a line that is only a date/time
+    if (/^\s*by\s+\S/i.test(text) && !/[.!?]\s+\S/.test(text)) score -= 60; // byline line
+    if (/^\s*(published|updated|posted|last updated)\b/i.test(text)) score -= 60; // dateline
+    if (/^(photo|image|picture|illustration|credit)\s*:/i.test(text)) score -= 60; // caption
+    if (/^about the (author|writer)\b|^author bio\b/i.test(text)) score -= 60; // author bio
     if (/^\s*\d+\s*(of|\/)\s*\d+\s*$/.test(text)) score -= 60; // "1 of 5" pagination
     if (/^\s*\d+\s*$/.test(text)) score -= 60; // bare page number
     if (isX && /^(show this thread|promoted)\b/i.test(text)) score -= 60;
@@ -641,6 +661,25 @@
     }
     // Markdown links keep their text, drop the URL.
     t = t.replace(SPOKEN_MD_LINK_RE, function (m, label) { removed.push(m); return label; });
+    // Timestamps are metadata, never substance — strip them BEFORE
+    // sentence-splitting, so a split can never tear "Nov. 13" or
+    // "3:27 PM" apart. Metadata-position only: a time that is the
+    // substance of a sentence ("the meeting starts at 3 PM") is kept.
+    // "Published Nov 13, 2026 at 3:27 PM." / "Updated 2:14 PM" /
+    // "Last updated 2 hours ago" / "Posted: Nov 13, 2026" — label
+    // plus date/time/ago (or just the label + punctuation), at a
+    // sentence start only. The date/time is REQUIRED after the label
+    // unless punctuation follows, so "Updated guidance says…" is
+    // never touched.
+    var PUB_RE = new RegExp("(^|[.!?]\\s+)(?:Published|Updated|Posted|Last updated)\\s*:?\\s*(?:on\\s+)?(?:(?:" + DATE_RE + "(?:\\s+at\\s+" + TIME_RE + ")?|" + TIME_RE + "|" + AGO_RE + ")\\s*[.!?]?\\s*|[.!?]+\\s*)", "gi");
+    t = t.replace(PUB_RE, function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; });
+    // "5 min read", "· 3 min read"
+    cut(/·?\s*\b\d+\s*(?:min|mins|minute|minutes)\s+read\b/gi);
+    // "2 hours ago", "3 days ago"
+    cut(new RegExp("\\b" + AGO_RE + "\\b", "gi"));
+    // A date or time opening a sentence and followed by a dash
+    // ("November 13, 2026 — the council met."): the dateline goes.
+    t = t.replace(new RegExp("(^|[.!?]\\s+)(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + ")\\s*[—–-]\\s*", "gi"), function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; });
     cut(SPOKEN_URL_RE);
     cut(SPOKEN_WWW_RE);
     cut(SPOKEN_EMAIL_RE);
@@ -653,6 +692,10 @@
       var s2 = s.replace(/\s+(at|to|on|in|for|and|or|with|from|of|by)\s*([.!?]|$)/gi, "$2").trim();
       s2 = s2.replace(/[ \t]{2,}/g, " ").trim();
       if (!s2) { dropped.push(s); return; }
+      // A sentence that IS only a date or a time is metadata — drop
+      // it. (Substance times survive: "the meeting starts at 3 PM"
+      // is a real sentence, not a timestamp line.)
+      if (TIMESTAMP_ONLY_RE.test(s2)) { dropped.push(s2); return; }
       if (wordsOf(s2) < 8 && LINK_POINTER_SENTENCE_RE.test(s2)) { dropped.push(s2); return; }
       kept.push(s2);
     });
@@ -974,18 +1017,22 @@
    * No device/browser voice is EVER listed here. On Carl's Pixel the
    * browser's own voices sounded robotic, and a 300-voice picker with
    * no descriptions was impossible to choose from. Only curated AI
-   * voices appear: Microsoft Edge Read Aloud voices (free, no key).
-   * The free Google voice is NOT a choice anywhere — it is an
-   * unlisted last-resort playback engine only, used silently by no
-   * one: when Microsoft is down the app says so loudly instead.
+   * voices appear. Which free engine plays depends on the browser:
+   * real Microsoft Edge gets the Microsoft Edge Read Aloud voices
+   * (free, no key); every other browser gets Kokoro on-device voices
+   * (free, no key, no credits — model from Hugging Face). There is
+   * NO robotic fallback anywhere in the app: no Google Translate
+   * TTS, no device voices, nothing. If no human-sounding engine can
+   * play, the app says so honestly and plays nothing.
    * Language first, then a small decisive subset per language —
    * never all languages mixed, never 300 voices. Every Microsoft
    * voice name below was verified against Microsoft's live voice
-   * list (Nov 10, 2026). Each entry: Edge ShortName, label,
-   * plain-language description with a "Best for:" line, accent tag,
-   * gender, use-case tag. */
+   * list (Nov 10, 2026); every Kokoro voice ID was verified against
+   * the model's voice list on Hugging Face (Nov 13, 2026). Each
+   * entry: voice id, label, plain-language description with a
+   * "Best for:" line, accent tag, gender, use-case tag. */
   var VOICE_LANGUAGES = [
-    { code: "en", label: "English", googleTl: "en", googleAccent: "US", sample: "Hello — I'm Auralis. I can read any article aloud for you, in a voice that sounds almost human.", voices: [
+    { code: "en", label: "English", sample: "Hello — I'm Auralis. I can read any article aloud for you, in a voice that sounds almost human.", voices: [
       { name: "en-US-AriaNeural", label: "Microsoft Aria", desc: "Warm, friendly American woman — our most natural free voice. Best for: articles and news.", accent: "US", gender: "Female", use: "Articles", recommended: true },
       { name: "en-US-JennyNeural", label: "Microsoft Jenny", desc: "Bright, upbeat American woman. Best for: stories and audiobooks.", accent: "US", gender: "Female", use: "Stories" },
       { name: "en-US-GuyNeural", label: "Microsoft Guy", desc: "Calm, steady American man. Best for: long articles and narration.", accent: "US", gender: "Male", use: "Articles" },
@@ -995,21 +1042,21 @@
       { name: "en-GB-RyanNeural", label: "Microsoft Ryan (UK)", desc: "Warm, clear British man. Best for: news and articles.", accent: "UK", gender: "Male", use: "News" },
       { name: "en-AU-NatashaNeural", label: "Microsoft Natasha", desc: "Warm Australian woman. Best for: stories and articles.", accent: "AU", gender: "Female", use: "Stories" }
     ]},
-    { code: "es", label: "Spanish", googleTl: "es", googleAccent: "Spain", sample: "Hola, soy Auralis. Puedo leer cualquier artículo en voz alta para ti.", voices: [
+    { code: "es", label: "Spanish", sample: "Hola, soy Auralis. Puedo leer cualquier artículo en voz alta para ti.", voices: [
       { name: "es-ES-ElviraNeural", label: "Microsoft Elvira", desc: "Warm, clear Spanish woman from Spain. Best for: articles.", accent: "Spain", gender: "Female", use: "Articles" },
       { name: "es-ES-AlvaroNeural", label: "Microsoft Alvaro", desc: "Calm, steady Spanish man from Spain. Best for: articles.", accent: "Spain", gender: "Male", use: "Articles" },
       { name: "es-ES-XimenaNeural", label: "Microsoft Ximena", desc: "Bright, friendly Spanish woman from Spain. Best for: stories.", accent: "Spain", gender: "Female", use: "Stories" },
       { name: "es-MX-DaliaNeural", label: "Microsoft Dalia", desc: "Warm, clear Mexican woman. Best for: stories.", accent: "Mexico", gender: "Female", use: "Articles" },
       { name: "es-MX-JorgeNeural", label: "Microsoft Jorge", desc: "Steady, clear Mexican man. Best for: news.", accent: "Mexico", gender: "Male", use: "News" }
     ]},
-    { code: "fr", label: "French", googleTl: "fr", googleAccent: "France", sample: "Bonjour, je suis Auralis. Je peux lire n'importe quel article à voix haute pour vous.", voices: [
+    { code: "fr", label: "French", sample: "Bonjour, je suis Auralis. Je peux lire n'importe quel article à voix haute pour vous.", voices: [
       { name: "fr-FR-DeniseNeural", label: "Microsoft Denise", desc: "Warm, clear French woman. Best for: articles.", accent: "France", gender: "Female", use: "Articles" },
       { name: "fr-FR-HenriNeural", label: "Microsoft Henri", desc: "Calm, steady French man. Best for: articles.", accent: "France", gender: "Male", use: "Articles" },
       { name: "fr-FR-EloiseNeural", label: "Microsoft Eloise", desc: "Clear, gentle French woman. Best for: news.", accent: "France", gender: "Female", use: "News" },
       { name: "fr-FR-VivienneMultilingualNeural", label: "Microsoft Vivienne", desc: "Bright, elegant French woman. Best for: stories.", accent: "France", gender: "Female", use: "Stories" },
       { name: "fr-FR-RemyMultilingualNeural", label: "Microsoft Remy", desc: "Warm, conversational French man. Best for: stories.", accent: "France", gender: "Male", use: "Stories" }
     ]},
-    { code: "de", label: "German", googleTl: "de", googleAccent: "Germany", sample: "Hallo, ich bin Auralis. Ich kann jeden Artikel laut für dich vorlesen.", voices: [
+    { code: "de", label: "German", sample: "Hallo, ich bin Auralis. Ich kann jeden Artikel laut für dich vorlesen.", voices: [
       { name: "de-DE-KatjaNeural", label: "Microsoft Katja", desc: "Warm, clear German woman. Best for: articles.", accent: "Germany", gender: "Female", use: "Articles" },
       { name: "de-DE-ConradNeural", label: "Microsoft Conrad", desc: "Calm, steady German man. Best for: articles.", accent: "Germany", gender: "Male", use: "Articles" },
       { name: "de-DE-AmalaNeural", label: "Microsoft Amala", desc: "Bright, friendly German woman. Best for: stories.", accent: "Germany", gender: "Female", use: "Stories" },
@@ -1017,34 +1064,34 @@
       { name: "de-DE-FlorianMultilingualNeural", label: "Microsoft Florian", desc: "Warm German man. Best for: stories.", accent: "Germany", gender: "Male", use: "Stories" },
       { name: "de-DE-SeraphinaMultilingualNeural", label: "Microsoft Seraphina", desc: "Clear, gentle German woman. Best for: news.", accent: "Germany", gender: "Female", use: "News" }
     ]},
-    { code: "it", label: "Italian", googleTl: "it", googleAccent: "Italy", sample: "Ciao, sono Auralis. Posso leggere qualsiasi articolo ad alta voce per te.", voices: [
+    { code: "it", label: "Italian", sample: "Ciao, sono Auralis. Posso leggere qualsiasi articolo ad alta voce per te.", voices: [
       { name: "it-IT-IsabellaNeural", label: "Microsoft Isabella", desc: "Warm, clear Italian woman. Best for: articles.", accent: "Italy", gender: "Female", use: "Articles" },
       { name: "it-IT-DiegoNeural", label: "Microsoft Diego", desc: "Calm, steady Italian man. Best for: articles.", accent: "Italy", gender: "Male", use: "Articles" },
       { name: "it-IT-ElsaNeural", label: "Microsoft Elsa", desc: "Bright, friendly Italian woman. Best for: stories.", accent: "Italy", gender: "Female", use: "Stories" },
       { name: "it-IT-GiuseppeMultilingualNeural", label: "Microsoft Giuseppe", desc: "Warm, conversational Italian man. Best for: stories.", accent: "Italy", gender: "Male", use: "Stories" }
     ]},
-    { code: "pt", label: "Portuguese", googleTl: "pt", googleAccent: "Brazil", sample: "Olá, eu sou Auralis. Posso ler qualquer artigo em voz alta para você.", voices: [
+    { code: "pt", label: "Portuguese", sample: "Olá, eu sou Auralis. Posso ler qualquer artigo em voz alta para você.", voices: [
       { name: "pt-BR-FranciscaNeural", label: "Microsoft Francisca", desc: "Warm, clear Brazilian woman. Best for: articles.", accent: "Brazil", gender: "Female", use: "Articles" },
       { name: "pt-BR-AntonioNeural", label: "Microsoft Antonio", desc: "Calm, steady Brazilian man. Best for: articles.", accent: "Brazil", gender: "Male", use: "Articles" },
       { name: "pt-BR-ThalitaMultilingualNeural", label: "Microsoft Thalita", desc: "Bright, friendly Brazilian woman. Best for: stories.", accent: "Brazil", gender: "Female", use: "Stories" }
     ]},
-    { code: "he", label: "Hebrew", googleTl: "he", googleAccent: "Israel", sample: "שלום, אני אורליס. אני יכולה לקרוא כל מאמר בקול רם בשבילך.", voices: [
+    { code: "he", label: "Hebrew", sample: "שלום, אני אורליס. אני יכולה לקרוא כל מאמר בקול רם בשבילך.", voices: [
       { name: "he-IL-HilaNeural", label: "Microsoft Hila", desc: "Warm, clear Hebrew woman. Best for: articles.", accent: "Israel", gender: "Female", use: "Articles" },
       { name: "he-IL-AvriNeural", label: "Microsoft Avri", desc: "Calm, steady Hebrew man. Best for: articles.", accent: "Israel", gender: "Male", use: "Articles" }
     ]},
-    { code: "ar", label: "Arabic", googleTl: "ar", googleAccent: "Saudi Arabia", sample: "مرحباً، أنا أوراليس. يمكنني قراءة أي مقال بصوت عالٍ لك.", voices: [
+    { code: "ar", label: "Arabic", sample: "مرحباً، أنا أوراليس. يمكنني قراءة أي مقال بصوت عالٍ لك.", voices: [
       { name: "ar-SA-ZariyahNeural", label: "Microsoft Zariyah", desc: "Warm, clear Arabic woman. Best for: articles.", accent: "Saudi Arabia", gender: "Female", use: "Articles" },
       { name: "ar-SA-HamedNeural", label: "Microsoft Hamed", desc: "Calm, steady Arabic man. Best for: articles.", accent: "Saudi Arabia", gender: "Male", use: "Articles" }
     ]},
-    { code: "hi", label: "Hindi", googleTl: "hi", googleAccent: "India", sample: "नमस्ते, मैं औरालिस हूँ। मैं आपके लिए कोई भी लेख ज़ोर से पढ़ सकती हूँ।", voices: [
+    { code: "hi", label: "Hindi", sample: "नमस्ते, मैं औरालिस हूँ। मैं आपके लिए कोई भी लेख ज़ोर से पढ़ सकती हूँ।", voices: [
       { name: "hi-IN-SwaraNeural", label: "Microsoft Swara", desc: "Warm, clear Hindi woman. Best for: articles.", accent: "India", gender: "Female", use: "Articles" },
       { name: "hi-IN-MadhurNeural", label: "Microsoft Madhur", desc: "Calm, steady Hindi man. Best for: articles.", accent: "India", gender: "Male", use: "Articles" }
     ]},
-    { code: "ja", label: "Japanese", googleTl: "ja", googleAccent: "Japan", sample: "こんにちは、私はオーラリスです。どんな記事でも音声で読み上げることができます。", voices: [
+    { code: "ja", label: "Japanese", sample: "こんにちは、私はオーラリスです。どんな記事でも音声で読み上げることができます。", voices: [
       { name: "ja-JP-NanamiNeural", label: "Microsoft Nanami", desc: "Warm, clear Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
       { name: "ja-JP-KeitaNeural", label: "Microsoft Keita", desc: "Calm, steady Japanese man. Best for: articles.", accent: "Japan", gender: "Male", use: "Articles" }
     ]},
-    { code: "zh", label: "Chinese (Mandarin)", googleTl: "zh-CN", googleAccent: "China", sample: "你好，我是奥拉里斯。我可以大声朗读任何文章。", voices: [
+    { code: "zh", label: "Chinese (Mandarin)", sample: "你好，我是奥拉里斯。我可以大声朗读任何文章。", voices: [
       { name: "zh-CN-XiaoxiaoNeural", label: "Microsoft Xiaoxiao", desc: "Warm, clear Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
       { name: "zh-CN-XiaoyiNeural", label: "Microsoft Xiaoyi", desc: "Clear, gentle Mandarin woman. Best for: news.", accent: "China", gender: "Female", use: "News" },
       { name: "zh-CN-YunyangNeural", label: "Microsoft Yunyang", desc: "Calm, steady Mandarin man. Best for: articles.", accent: "China", gender: "Male", use: "Articles" },
@@ -1054,6 +1101,101 @@
   var DEFAULT_EDGE_VOICE = "en-US-AriaNeural";
   var ALL_EDGE_VOICES = [];
   VOICE_LANGUAGES.forEach(function (l) { l.voices.forEach(function (v) { ALL_EDGE_VOICES.push(v); }); });
+
+  /* ---------------- Kokoro: the free on-device AI voices ----------------
+   * Kokoro-82M (Apache-2.0) runs 100% in the browser via kokoro-js +
+   * onnxruntime-web (WebGPU with WASM fallback). The model comes from
+   * Hugging Face (onnx-community/Kokoro-82M-v1.0-ONNX) and is
+   * downloaded ONCE (~90MB, q8) on first play, then works offline.
+   * No key, no account, no credits, no usage limit, nothing uploaded.
+   * This is the free engine in every browser EXCEPT real Microsoft
+   * Edge, where the Microsoft voices work and stay the default.
+   * Why: Microsoft rejects the Edge Read Aloud WebSocket handshake
+   * with 403 unless the User-Agent contains "Edg/" — and a web page
+   * cannot set the User-Agent header on a WebSocket. Only a real
+   * Edge browser (or an extension) can pass that check, so in Chrome
+   * and every other browser the Edge transport is never even tried.
+   * Every voice ID below was verified against the model's voice list
+   * on Hugging Face (Nov 13, 2026). Kokoro has no German, Hebrew or
+   * Arabic voices — those languages show an honest empty state in
+   * non-Edge browsers (studio voices via a free key still work). */
+  var KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
+  var KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+  var DEFAULT_KOKORO_VOICE = "af_heart";
+  var KOKORO_VOICES = {
+    en: [
+      { name: "af_heart", label: "Kokoro Heart", desc: "Warm, expressive American woman — Kokoro's best-rated voice. Best for: articles and audiobooks.", accent: "US", gender: "Female", use: "Articles", recommended: true },
+      { name: "af_sarah", label: "Kokoro Sarah", desc: "Bright, clear American woman. Best for: news and short articles.", accent: "US", gender: "Female", use: "News" },
+      { name: "af_bella", label: "Kokoro Bella", desc: "Smooth, gentle American woman. Best for: stories and long reads.", accent: "US", gender: "Female", use: "Stories" },
+      { name: "am_adam", label: "Kokoro Adam", desc: "Deep, steady American man. Best for: narration and long articles.", accent: "US", gender: "Male", use: "Articles" },
+      { name: "am_michael", label: "Kokoro Michael", desc: "Warm, conversational American man. Best for: articles and narration.", accent: "US", gender: "Male", use: "Articles" },
+      { name: "am_onyx", label: "Kokoro Onyx", desc: "Calm, deep American man. Best for: audiobooks and long reads.", accent: "US", gender: "Male", use: "Audiobooks" },
+      { name: "bf_emma", label: "Kokoro Emma", desc: "Clear, friendly British woman. Best for: articles and news.", accent: "UK", gender: "Female", use: "Articles" },
+      { name: "bm_george", label: "Kokoro George", desc: "Steady, warm British man. Best for: news and narration.", accent: "UK", gender: "Male", use: "News" }
+    ],
+    es: [
+      { name: "ef_dora", label: "Kokoro Dora", desc: "Warm, clear Spanish woman. Best for: articles.", accent: "Spain", gender: "Female", use: "Articles" },
+      { name: "em_alex", label: "Kokoro Alex", desc: "Calm, steady Spanish man. Best for: articles.", accent: "Spain", gender: "Male", use: "Articles" },
+      { name: "em_santa", label: "Kokoro Santa", desc: "Warm, friendly Spanish man. Best for: stories.", accent: "Spain", gender: "Male", use: "Stories" }
+    ],
+    fr: [
+      { name: "ff_siwis", label: "Kokoro Siwis", desc: "Warm, clear French woman. Best for: articles.", accent: "France", gender: "Female", use: "Articles" }
+    ],
+    hi: [
+      { name: "hf_alpha", label: "Kokoro Alpha", desc: "Warm, clear Hindi woman. Best for: articles.", accent: "India", gender: "Female", use: "Articles" },
+      { name: "hf_beta", label: "Kokoro Beta", desc: "Bright, friendly Hindi woman. Best for: stories.", accent: "India", gender: "Female", use: "Stories" },
+      { name: "hm_omega", label: "Kokoro Omega", desc: "Calm, steady Hindi man. Best for: articles.", accent: "India", gender: "Male", use: "Articles" },
+      { name: "hm_psi", label: "Kokoro Psi", desc: "Warm, clear Hindi man. Best for: stories.", accent: "India", gender: "Male", use: "Stories" }
+    ],
+    it: [
+      { name: "if_sara", label: "Kokoro Sara", desc: "Warm, clear Italian woman. Best for: articles.", accent: "Italy", gender: "Female", use: "Articles" },
+      { name: "im_nicola", label: "Kokoro Nicola", desc: "Calm, steady Italian man. Best for: articles.", accent: "Italy", gender: "Male", use: "Articles" }
+    ],
+    ja: [
+      { name: "jf_alpha", label: "Kokoro Alpha", desc: "Warm, clear Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
+      { name: "jf_gongitsune", label: "Kokoro Gongitsune", desc: "Bright, friendly Japanese woman. Best for: stories.", accent: "Japan", gender: "Female", use: "Stories" },
+      { name: "jf_nezumi", label: "Kokoro Nezumi", desc: "Clear, gentle Japanese woman. Best for: stories.", accent: "Japan", gender: "Female", use: "Stories" },
+      { name: "jf_tebukuro", label: "Kokoro Tebukuro", desc: "Warm Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
+      { name: "jm_kumo", label: "Kokoro Kumo", desc: "Calm, steady Japanese man. Best for: articles.", accent: "Japan", gender: "Male", use: "Articles" }
+    ],
+    pt: [
+      { name: "pf_dora", label: "Kokoro Dora", desc: "Warm, clear Brazilian woman. Best for: articles.", accent: "Brazil", gender: "Female", use: "Articles" },
+      { name: "pm_alex", label: "Kokoro Alex", desc: "Calm, steady Brazilian man. Best for: articles.", accent: "Brazil", gender: "Male", use: "Articles" },
+      { name: "pm_santa", label: "Kokoro Santa", desc: "Warm, friendly Brazilian man. Best for: stories.", accent: "Brazil", gender: "Male", use: "Stories" }
+    ],
+    zh: [
+      { name: "zf_xiaobei", label: "Kokoro Xiaobei", desc: "Warm, clear Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
+      { name: "zf_xiaoni", label: "Kokoro Xiaoni", desc: "Bright, friendly Mandarin woman. Best for: stories.", accent: "China", gender: "Female", use: "Stories" },
+      { name: "zf_xiaoxiao", label: "Kokoro Xiaoxiao", desc: "Clear, gentle Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
+      { name: "zf_xiaoyi", label: "Kokoro Xiaoyi", desc: "Warm Mandarin woman. Best for: news.", accent: "China", gender: "Female", use: "News" }
+    ]
+  };
+  function isEdgeBrowser() {
+    return /Edg\//i.test((typeof navigator !== "undefined" && navigator.userAgent) || "");
+  }
+  // The free voices for the current language, from the engine that can
+  // actually play in this browser: Microsoft in real Edge (unless the
+  // Edge handshake already failed — then Kokoro), Kokoro everywhere else.
+  function freeVoiceList() {
+    var lang = currentLanguage();
+    if (isEdgeBrowser() && !state.edgeDown) {
+      return { engine: "edge", voices: languageEntry(lang).voices };
+    }
+    return { engine: "kokoro", voices: KOKORO_VOICES[lang] || [] };
+  }
+  function kokoroVoiceByName(n) {
+    var found = null;
+    Object.keys(KOKORO_VOICES).forEach(function (code) {
+      KOKORO_VOICES[code].forEach(function (v) { if (v.name === n) found = v; });
+    });
+    return found || KOKORO_VOICES.en[0];
+  }
+  function freeVoiceLabel(choice) {
+    if (!choice) choice = currentVoiceChoice();
+    if (choice.engine === "edge") return edgeVoiceByName(choice.edgeVoice).label;
+    if (choice.engine === "kokoro" && choice.kokoroVoice) return kokoroVoiceByName(choice.kokoroVoice).label;
+    return "Kokoro Heart";
+  }
   function languageEntry(code) {
     var found = null;
     VOICE_LANGUAGES.forEach(function (l) { if (l.code === code) found = l; });
@@ -1076,32 +1218,44 @@
     return parts.length >= 2 ? parts[0] + "-" + parts[1] : "en-US";
   }
   function currentEdgeVoice() { return (currentVoiceChoice().edgeVoice || DEFAULT_EDGE_VOICE); }
-  // The visitor's voice choice: which Microsoft AI voice.
-  // Default = Microsoft Aria (Edge Read Aloud), free, no key — unless
-  // the visitor picked otherwise. "google" and "browser" are legacy
-  // values saved by older versions: the Google voice is no longer a
-  // choice and device voices are gone, so both migrate to Aria.
+  function currentKokoroVoice() { return (currentVoiceChoice().kokoroVoice || DEFAULT_KOKORO_VOICE); }
+  // The visitor's free voice choice: which engine can play here, and
+  // which voice in it. In real Edge the default is Microsoft Aria;
+  // everywhere else it is Kokoro Heart (on-device, free, no key).
+  // "google" and "browser" are legacy values saved by older versions:
+  // both migrate to the free default for this browser.
   function currentVoiceChoice() {
     var saved = storeGet(LS.voice, {}) || {};
-    return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, browserName: "" };
+    if (isEdgeBrowser() && !state.edgeDown) {
+      return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, kokoroVoice: "", browserName: "" };
+    }
+    var list = KOKORO_VOICES[currentLanguage()] || [];
+    var kv = saved.kokoroVoice || DEFAULT_KOKORO_VOICE;
+    var ok = false;
+    list.forEach(function (v) { if (v.name === kv) ok = true; });
+    return { engine: "kokoro", edgeVoice: "", kokoroVoice: ok ? kv : (list.length ? list[0].name : ""), browserName: "" };
   }
   // The voice picker: language-first, curated cards only.
-  // No browser/device voice is ever listed or used, and the Google
-  // voice is not a choice either — it is an unlisted last-resort
-  // playback engine only. Every option here is a human-sounding
-  // Microsoft AI voice.
+  // No browser/device voice is ever listed or used, and there is no
+  // Google voice anywhere — the free engine is Microsoft (real Edge)
+  // or Kokoro on-device (everywhere else). Every option here is a
+  // human-sounding AI voice.
   function renderReaderVoiceSelect() {
     var sel = $("voiceSelect"); if (!sel) return;
     var choice = currentVoiceChoice();
-    var lang = languageEntry(currentLanguage());
+    var free = freeVoiceList();
     sel.innerHTML = "";
     var g1 = document.createElement("optgroup");
-    g1.label = "Microsoft AI voices — free, no key";
-    if (state.edgeDown) g1.disabled = true; // can't pick what can't play
-    lang.voices.forEach(function (ev) {
+    g1.label = free.engine === "edge" ? "Microsoft AI voices — free, no key" : "Kokoro AI voices — free, on your device";
+    if (!free.voices.length) {
+      var none = el("option", null, "No free on-device voice for this language yet — add a free key below");
+      none.disabled = true;
+      g1.appendChild(none);
+    }
+    free.voices.forEach(function (ev) {
       var opt = el("option", null, ev.label + " — " + ev.desc);
-      opt.value = "edge:" + ev.name;
-      if (choice.engine === "edge" && choice.edgeVoice === ev.name) opt.selected = true;
+      opt.value = free.engine + ":" + ev.name;
+      if (choice.engine === free.engine && (free.engine === "edge" ? choice.edgeVoice === ev.name : choice.kokoroVoice === ev.name)) opt.selected = true;
       g1.appendChild(opt);
     });
     sel.appendChild(g1);
@@ -1113,13 +1267,13 @@
       g3.appendChild(popt);
       sel.appendChild(g3);
     }
-    if (!sel.value) sel.value = "edge:" + lang.voices[0].name;
+    if (!sel.value && free.voices.length) sel.value = free.engine + ":" + free.voices[0].name;
   }
   function voiceCard(entry, engine) {
-    var card = el("div", "voice-card edge-voice");
+    var card = el("div", "voice-card " + (engine === "edge" ? "edge-voice" : "kokoro-voice"));
     var choice = currentVoiceChoice();
-    var selected = choice.engine === "edge" && choice.edgeVoice === entry.name;
-    var unavailable = !!state.edgeDown;
+    var selected = choice.engine === engine && (engine === "edge" ? choice.edgeVoice === entry.name : choice.kokoroVoice === entry.name);
+    var unavailable = engine === "edge" && !!state.edgeDown;
     if (selected) card.classList.add("selected");
     if (unavailable) {
       card.classList.add("unavailable");
@@ -1145,7 +1299,7 @@
     // The card itself is NOT clickable: nested interactive elements
     // meant a Preview tap could be swallowed by the card's own click
     // handler. Only the two buttons below act.
-    pv.addEventListener("click", function () { previewEdgeVoice(entry); });
+    pv.addEventListener("click", function () { previewFreeVoice(entry, engine); });
     actions.appendChild(pv);
     var use = el("button", "btn btn-dark btn-small", selected ? "✓ Using" : "Use this voice");
     use.type = "button";
@@ -1159,46 +1313,59 @@
   function renderVoiceCards() {
     var wrap = $("voiceCards"); if (!wrap) return;
     wrap.innerHTML = "";
-    var lang = languageEntry(currentLanguage());
+    var free = freeVoiceList();
     var sel = $("voiceLangSelect");
-    if (sel && sel.value !== lang.code) sel.value = lang.code;
-    lang.voices.forEach(function (v) { wrap.appendChild(voiceCard(v, "edge")); });
+    if (sel && sel.value !== currentLanguage()) sel.value = currentLanguage();
+    if (!free.voices.length) {
+      var note = el("p", "muted", "No free on-device voice for this language yet — Kokoro has no voices for it. Add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.");
+      wrap.appendChild(note);
+      return;
+    }
+    free.voices.forEach(function (v) { wrap.appendChild(voiceCard(v, free.engine)); });
   }
   function updateVoiceEmptyState() {
     var box = $("voiceEmptyState"); if (!box) return;
-    box.hidden = !(state.edgeFailed && state.googleFailed);
+    var free = freeVoiceList();
+    box.hidden = !(free.voices.length === 0 || state.kokoroFailed || (isEdgeBrowser() && state.edgeDown && state.kokoroFailed));
   }
-  // The loud Edge-failure message — shown as a banner AND a toast,
-  // never whispered. The single free Google voice is only a last
-  // resort while this banner is showing; it is never presented as
-  // a voice anyone chose.
-  var EDGE_DOWN_MSG = "Microsoft voices aren't answering in this browser — you're hearing the single free Google voice, so every voice sounds the same. For the real Microsoft voices, open this in Microsoft Edge, or add a free ElevenLabs/Cartesia key below.";
+  // Microsoft voices in real Edge only. If the Edge handshake fails
+  // there, the free engine switches to the on-device Kokoro voices —
+  // still human-sounding, still free — and the banner says so. There
+  // is no Google voice anywhere in this app anymore: Google Translate
+  // TTS was removed entirely in v1.4.0 because its one flat voice
+  // per language is what made every voice sound the same.
+  var EDGE_DOWN_MSG = "Microsoft voices aren't answering in Microsoft Edge — you're hearing the free on-device Kokoro voices instead. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs/Cartesia key below for studio voices.";
   function edgeDownToast() { toast(EDGE_DOWN_MSG); }
   function markEdgeDown() {
     state.edgeDown = true;
     state.edgeFailed = true;
+    state.freeTransport = null;
     updateEdgeDownUI();
     edgeDownToast();
   }
   function updateEdgeDownUI() {
     var banner = $("edgeDownBanner");
     if (banner) banner.hidden = !state.edgeDown;
-    // Re-render the voice UI: the cards are (re)built with the
-    // unavailable badge + disabled buttons when Edge is down, and the
-    // reader dropdown's Edge group is disabled too. Toggling a class
-    // alone would leave the badge and buttons in their old state.
+    // Re-render the voice UI: in real Edge with Edge down, the free
+    // list switches to Kokoro (freeVoiceList), so the cards are
+    // rebuilt as Kokoro cards; the reader dropdown follows.
     renderReaderVoiceSelect();
     renderVoiceCards();
     updateVoiceEmptyState();
     syncBottomBar();
+    updateDownloadLabel();
   }
-  // Lightweight handshake probe on load: opening the Microsoft
-  // WebSocket proves the voices can answer in this browser. If it
-  // fails, the banner goes up and the cards grey out BEFORE the
-  // visitor picks — nobody is offered a voice that will not play.
+  // Handshake probe on load — REAL MICROSOFT EDGE ONLY. In every other
+  // browser the Edge WebSocket handshake is rejected by Microsoft
+  // (403 unless the User-Agent contains "Edg/", which a web page
+  // cannot set), so probing there would only ever produce a scary
+  // error banner for something that was never going to work. In
+  // non-Edge browsers the free engine is Kokoro from the start and
+  // there is nothing to probe.
   function probeEdgeTransport() {
     if (state.edgeProbed) return;
     state.edgeProbed = true;
+    if (!isEdgeBrowser()) return; // Kokoro is the free engine here — no probe, no banner
     if (typeof WebSocket === "undefined") { markEdgeDown(); return; }
     edgeConnect().then(function () {
       state.edgeFailed = false;
@@ -1212,29 +1379,34 @@
   function setVoiceLanguage(code) {
     var cur = storeGet(LS.voice, {}) || {};
     cur.lang = code;
-    var entry = languageEntry(code);
-    if (cur.engine === "edge") {
+    var free = freeVoiceList();
+    if (free.engine === "edge") {
       var ok = false;
-      entry.voices.forEach(function (v) { if (v.name === cur.edgeVoice) ok = true; });
-      if (!ok) cur.edgeVoice = entry.voices[0].name;
+      free.voices.forEach(function (v) { if (v.name === cur.edgeVoice) ok = true; });
+      if (!ok) cur.edgeVoice = free.voices.length ? free.voices[0].name : DEFAULT_EDGE_VOICE;
+    } else {
+      var okK = false;
+      free.voices.forEach(function (v) { if (v.name === cur.kokoroVoice) okK = true; });
+      if (!okK) cur.kokoroVoice = free.voices.length ? free.voices[0].name : DEFAULT_KOKORO_VOICE;
     }
     storeSet(LS.voice, cur);
     state.freeTransport = null;
-    state.edgeFailed = false; state.googleFailed = false;
+    state.edgeFailed = false; state.kokoroFailed = false;
     loadVoices();
   }
-  function selectVoice(engine, edgeVoice) {
-    if (state.edgeDown) { edgeDownToast(); return; } // can't pick what can't play
+  function selectVoice(engine, voiceId) {
+    if (engine === "edge" && state.edgeDown) { edgeDownToast(); return; } // can't pick what can't play
     var cur = storeGet(LS.voice, {}) || {};
-    cur.engine = "edge";
-    cur.edgeVoice = edgeVoice || DEFAULT_EDGE_VOICE;
+    cur.engine = engine;
+    if (engine === "edge") cur.edgeVoice = voiceId || DEFAULT_EDGE_VOICE;
+    else cur.kokoroVoice = voiceId || DEFAULT_KOKORO_VOICE;
     cur.name = "";
     cur.lang = currentLanguage();
     storeSet(LS.voice, cur);
     state.freeTransport = null; // re-decide the free transport for the new voice
     state.edgeFailed = false;
     loadVoices();
-    toast("Voice set to " + edgeVoiceByName(cur.edgeVoice).label + " (free).");
+    toast("Voice set to " + freeVoiceLabel({ engine: engine, edgeVoice: cur.edgeVoice, kokoroVoice: cur.kokoroVoice }) + " (free).");
   }
   function persistVoiceChoice() {
     var sel = $("voiceSelect");
@@ -1247,9 +1419,10 @@
     }
     var cur = storeGet(LS.voice, {}) || {};
     var prev = currentVoiceChoice();
-    cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.name = "";
-    if (val.indexOf("edge:") === 0) { cur.edgeVoice = val.slice(5); }
-    else if (val.indexOf("premium:") === 0) { cur.edgeVoice = prev.edgeVoice; }
+    cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.kokoroVoice = DEFAULT_KOKORO_VOICE; cur.name = "";
+    if (val.indexOf("edge:") === 0) { cur.engine = "edge"; cur.edgeVoice = val.slice(5); }
+    else if (val.indexOf("kokoro:") === 0) { cur.engine = "kokoro"; cur.kokoroVoice = val.slice(7); }
+    else if (val.indexOf("premium:") === 0) { cur.engine = prev.engine; cur.edgeVoice = prev.edgeVoice; cur.kokoroVoice = prev.kokoroVoice; }
     cur.lang = currentLanguage();
     var r = $("rateRange"), p = $("pitchRange");
     cur.rate = r ? parseFloat(r.value) : 1; cur.pitch = p ? parseFloat(p.value) : 1;
@@ -1259,20 +1432,20 @@
     renderVoiceCards();
   }
 
-  /* ---------------- playback: free AI voices (Microsoft Edge Read Aloud + Google) ----------------
-   * No key, no account, no credits. Microsoft Edge Read Aloud is the
-   * default: real Microsoft Natural voices (Aria, Jenny, Guy…) served
-   * from speech.platform.bing.com, the same endpoint Microsoft Edge uses
-   * for Read Aloud. It works in Microsoft Edge; in other browsers the
-   * handshake may be refused — then the app says so LOUDLY (banner +
-   * toast, Microsoft cards greyed out) and uses the free Google voice
-   * (translate.google.com TTS) ONLY as an unlisted last resort while
-   * the banner shows. Google has one voice per language, which is why
-   * a silent fallback made every voice sound the same — so the
-   * fallback is never silent. Karaoke highlighting is timer-estimated
-   * on this engine. */
+  /* ---------------- playback: free AI voices (Microsoft Edge in Edge, Kokoro everywhere else) ----------------
+   * No key, no account, no credits. In real Microsoft Edge the free
+   * engine is Microsoft Edge Read Aloud (Aria, Jenny, Guy…) from
+   * speech.platform.bing.com. In every other browser the free engine
+   * is Kokoro, running 100% on the visitor's own device (see below).
+   * Google Translate TTS was REMOVED ENTIRELY in v1.4.0: its one flat
+   * voice per language is what made every voice sound the same, and
+   * there is no robotic fallback left in this app. If no
+   * human-sounding engine can play, playback stops with an honest
+   * reason instead of playing a robot. Karaoke highlighting is
+   * timer-estimated on this engine (Kokoro knows the true audio
+   * duration, so its timer is exact). */
   var EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
-  var EDGE_SEC_MS_GEC_VERSION = "1-141.0.3537.57";
+  var EDGE_SEC_MS_GEC_VERSION = "1-143.0.3650.75";
   function edgeRateString() {
     var r = currentRate();
     var pct = Math.round((r - 1) * 100);
@@ -1296,7 +1469,11 @@
   function edgeConnect() {
     if (edgeWs && edgeWs.readyState === 1) return Promise.resolve(edgeWs);
     if (state.edgeFailed) return Promise.reject(new Error("Microsoft voices unavailable"));
-    return edgeSecMsGec().then(function (gec) {
+    // Promise.resolve().then() so a synchronous throw inside
+    // edgeSecMsGec (a runtime missing TextEncoder/crypto) becomes a
+    // rejection the probe's .catch handles — never an uncaught timer
+    // error with no banner.
+    return Promise.resolve().then(edgeSecMsGec).then(function (gec) {
       return new Promise(function (resolve, reject) {
         var connId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
           var r = Math.random() * 16 | 0;
@@ -1346,45 +1523,178 @@
       });
     }).catch(function (err) { state.edgeFailed = true; throw err; });
   }
-  function googleFreeUrl(text, tl) {
-    return "https://translate.google.com/translate_tts?ie=UTF-8&q=" + encodeURIComponent(text) + "&tl=" + encodeURIComponent(tl || "en") + "&client=tw-ob";
+  /* ---------------- Kokoro: free voices that run on your device ----------------
+   * kokoro-js (Apache-2.0) runs the Kokoro-82M model 100% in the
+   * browser via @huggingface/transformers + onnxruntime-web (WebGPU
+   * with WASM fallback). The model is downloaded ONCE from Hugging
+   * Face (~90MB, q8) on first play, then cached by the browser and
+   * works offline. Nothing is uploaded, no account, no key, no
+   * credits, no usage limit. Loaded LAZILY — never on page load —
+   * with a clear progress state, so the visitor always knows what
+   * is happening. If the model cannot load, the app says so honestly
+   * and points at the free ElevenLabs/Cartesia key path — it never
+   * falls back to a robotic voice. */
+  var kokoro = {
+    tts: null,           // loaded KokoroTTS instance
+    loading: null,       // in-flight load promise
+    failed: false,       // load failed — do not retry silently
+    failReason: "",
+    deviceTriedWasm: false
+  };
+  function kokoroLoadText() { return $("kokoroLoadText"); }
+  function kokoroLoadFill() { return $("kokoroLoadFill"); }
+  function kokoroLoadBox() { return $("kokoroLoadBox"); }
+  function showKokoroLoading(label, pct) {
+    var box = kokoroLoadBox();
+    if (box) box.hidden = false;
+    var t = kokoroLoadText();
+    if (t) t.textContent = label;
+    var f = kokoroLoadFill();
+    if (f) f.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
   }
-  // Chains several short Google TTS chunks behind one play/pause/onended
-  // interface (Google caps each request at ~200 characters). This is the
-  // UNLISTED last resort only: it has exactly one voice per language,
-  // which is why a silent fallback to it made every voice sound the
-  // same. Errors are tracked: if every chunk fails, the chain reports
-  // an error instead of ending — a failed listen must never look
-  // finished.
-  function googleAudioChain(chunks) {
-    var tl = languageEntry(currentLanguage()).googleTl;
-    var audios = chunks.map(function (c) { var a = new Audio(googleFreeUrl(c, tl)); a.preload = "auto"; return a; });
-    var i = 0, endedFn = null, errorFn = null, failed = 0;
-    function advanceOrFail(k) {
-      if (k < audios.length - 1) {
-        i = k + 1;
-        audios[i].play().catch(function () {
-          failed++;
-          if (failed >= audios.length) { if (errorFn) errorFn(); }
-          else if (endedFn) endedFn();
-        });
-      } else if (failed >= audios.length) { if (errorFn) errorFn(); }
-      else if (endedFn) endedFn();
+  function hideKokoroLoading() {
+    var box = kokoroLoadBox();
+    if (box) box.hidden = true;
+  }
+  function kokoroFail(reason) {
+    kokoro.failed = true;
+    kokoro.failReason = reason;
+    kokoro.loading = null;
+    state.kokoroFailed = true;
+    hideKokoroLoading();
+    updateVoiceEmptyState();
+  }
+  // Load the Kokoro model (once per page). `onProgress` gets
+  // { label, pct } for the loading UI. Test seam: if the harness sets
+  // window.__AURALIS_KOKORO_MOCK, it is used instead of the CDN —
+  // that is how QA exercises this path without a 90MB download.
+  function ensureKokoro(onProgress) {
+    if (kokoro.tts) return Promise.resolve(kokoro.tts);
+    if (kokoro.loading) return kokoro.loading;
+    if (kokoro.failed) return Promise.reject(new Error(kokoro.failReason || "Kokoro voices could not be loaded."));
+    if (typeof window !== "undefined" && window.__AURALIS_KOKORO_MOCK) {
+      kokoro.tts = window.__AURALIS_KOKORO_MOCK;
+      return Promise.resolve(kokoro.tts);
     }
-    audios.forEach(function (a, k) {
-      a.addEventListener("ended", function () { advanceOrFail(k); });
-      a.addEventListener("error", function () { failed++; advanceOrFail(k); });
+    if (typeof window === "undefined" || typeof window.fetch === "undefined") {
+      // No fetch (very old browser / odd runtime): the model cannot be
+      // downloaded at all. Mark the failure like any other load
+      // failure, so the honest empty state shows — a rejected promise
+      // alone would leave the voice list looking usable.
+      kokoroFail("This browser can't download the on-device voice model.");
+      return Promise.reject(new Error(kokoro.failReason));
+    }
+    var firstTime = !storeGet("auralis.kokoro.seen", false);
+    showKokoroLoading(firstTime
+      ? "First play downloads the voice model once (~90MB) — then it works offline, even on a plane. Best on Wi-Fi…"
+      : "Loading the on-device voices…", 0);
+    var device = (typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm";
+    kokoro.loading = (function loadWith(deviceName) {
+      // Promise.resolve().then() so even a synchronous import() throw
+      // (odd runtimes) becomes a rejection the .catch below handles.
+      return Promise.resolve().then(function () { return import(KOKORO_CDN); }).then(function (mod) {
+        var KokoroTTS = mod.KokoroTTS;
+        if (!KokoroTTS) throw new Error("The voice library did not load.");
+        return KokoroTTS.from_pretrained(KOKORO_MODEL, {
+          dtype: "q8",
+          device: deviceName,
+          progress_callback: function (p) {
+            if (!p) return;
+            var label = "Loading the on-device voices…";
+            var pct = null;
+            if (typeof p.progress === "number") pct = Math.round(p.progress);
+            if (p.status === "downloading") label = "Downloading the voice model once (~90MB)" + (p.file ? " — " + String(p.file).split("/").pop() : "") + "…";
+            else if (p.status === "loading") label = "Loading the voice model…";
+            else if (p.status === "done") label = "Voices ready.";
+            if (onProgress) onProgress({ label: label, pct: pct });
+            showKokoroLoading(label, pct);
+          }
+        });
+      });
+    })(device).then(function (tts) {
+      kokoro.tts = tts;
+      kokoro.loading = null;
+      storeSet("auralis.kokoro.seen", true);
+      hideKokoroLoading();
+      return tts;
+    }).catch(function (err) {
+      kokoro.loading = null;
+      kokoroFail((err && err.message) || "The on-device voice model could not be downloaded.");
+      throw new Error(kokoro.failReason);
     });
-    return {
-      play: function () { return audios[i].play(); },
-      pause: function () { audios[i].pause(); },
-      get currentTime() { return audios[i].currentTime || 0; },
-      set currentTime(v) { try { audios[i].currentTime = v; } catch (e) {} },
-      set onended(fn) { endedFn = fn; },
-      get onended() { return endedFn; },
-      set onerror(fn) { errorFn = fn; },
-      get onerror() { return errorFn; }
-    };
+    return kokoro.loading;
+  }
+  // kokoro-js generate() returns a RawAudio-like object; the exact
+  // shape varies by version/environment ({ audio } vs { data } vs the
+  // Float32Array itself). Extract defensively, or null.
+  function kokoroExtractSamples(result) {
+    if (!result) return null;
+    var data = null;
+    if (result.audio instanceof Float32Array) data = result.audio;
+    else if (result.data instanceof Float32Array) data = result.data;
+    else if (result instanceof Float32Array) data = result;
+    if (!data || !data.length) return null;
+    var sr = (result.sampling_rate || result.sampleRate || 24000);
+    return { samples: data, sampleRate: sr };
+  }
+  // Float32 PCM -> 16-bit mono WAV blob (44-byte RIFF header).
+  function float32ToWavBlob(samples, sampleRate) {
+    var sr = sampleRate || 24000;
+    var n = samples.length;
+    var buf = new ArrayBuffer(44 + n * 2);
+    var v = new DataView(buf);
+    function wstr(off, s) { for (var i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); }
+    wstr(0, "RIFF");
+    v.setUint32(4, 36 + n * 2, true);
+    wstr(8, "WAVE");
+    wstr(12, "fmt ");
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); // PCM
+    v.setUint16(22, 1, true); // mono
+    v.setUint32(24, sr, true);
+    v.setUint32(28, sr * 2, true);
+    v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true);
+    wstr(36, "data");
+    v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+  // Synthesize one sentence with Kokoro. Returns { blob, durationSec,
+  // samples, sampleRate }. If the WebGPU run yields no samples (a
+  // known readback quirk), reload once on WASM and retry.
+  function kokoroSynthesize(text, voiceId) {
+    return ensureKokoro().then(function (tts) {
+      var speed = Math.max(0.5, Math.min(2, currentRate() || 1));
+      return tts.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed }).then(function (result) {
+        var out = kokoroExtractSamples(result);
+        if (out) return { blob: float32ToWavBlob(out.samples, out.sampleRate), durationSec: out.samples.length / out.sampleRate, samples: out.samples, sampleRate: out.sampleRate };
+        if (!kokoro.deviceTriedWasm) {
+          kokoro.deviceTriedWasm = true;
+          kokoro.tts = null;
+          return ensureKokoro().then(function (tts2) {
+            return tts2.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed });
+          }).then(function (result2) {
+            var out2 = kokoroExtractSamples(result2);
+            if (!out2) throw new Error("Kokoro generated no audio for this sentence.");
+            return { blob: float32ToWavBlob(out2.samples, out2.sampleRate), durationSec: out2.samples.length / out2.sampleRate, samples: out2.samples, sampleRate: out2.sampleRate };
+          });
+        }
+        throw new Error("Kokoro generated no audio for this sentence.");
+      });
+    });
+  }
+  function kokoroSentenceAudio(text) {
+    return kokoroSynthesize(text, currentKokoroVoice()).then(function (res) {
+      var url = URL.createObjectURL(res.blob);
+      var a = new Audio(url);
+      a._durMs = Math.max(200, Math.round(res.durationSec * 1000));
+      a.addEventListener("ended", function () { URL.revokeObjectURL(url); });
+      return a;
+    });
   }
   function edgeSentenceAudio(text) {
     return edgeSynthesize(text, currentEdgeVoice(), localeOf(currentEdgeVoice())).then(function (blob) {
@@ -1394,32 +1704,36 @@
       return a;
     });
   }
-  function googleSentenceAudio(text) {
-    return Promise.resolve(googleAudioChain(chunkText(text, 180)));
-  }
   function freeFetchAudio(text) {
-    if (state.freeTransport === "google") return googleSentenceAudio(text);
-    // Microsoft first. If it fails, say so LOUDLY (banner + toast,
-    // Microsoft cards greyed out) and use the single free Google
-    // voice ONLY as an unlisted last resort while the banner shows.
-    // Never let a failed transport masquerade as a working voice.
-    return edgeSentenceAudio(text).then(function (a) {
-      state.freeTransport = "edge";
-      state.edgeFailed = false;
-      if (state.edgeDown) { state.edgeDown = false; updateEdgeDownUI(); }
-      return a;
-    }).catch(function () {
-      state.freeTransport = "google";
-      state.edgeFailed = true;
-      markEdgeDown();
-      return googleSentenceAudio(text);
-    });
+    var choice = currentVoiceChoice();
+    if (choice.engine === "edge") {
+      // Real Edge only: Microsoft first; if it fails mid-play, fall
+      // back to the on-device Kokoro voices (still human, still free)
+      // and say so — never to a robotic voice.
+      return edgeSentenceAudio(text).then(function (a) {
+        state.freeTransport = "edge";
+        state.edgeFailed = false;
+        if (state.edgeDown) { state.edgeDown = false; updateEdgeDownUI(); }
+        return a;
+      }).catch(function () {
+        state.freeTransport = "kokoro";
+        state.edgeFailed = true;
+        markEdgeDown();
+        return kokoroSentenceAudio(text);
+      });
+    }
+    // Everywhere else: Kokoro on-device, straight away. The Edge
+    // handshake is never even attempted here.
+    state.freeTransport = "kokoro";
+    return kokoroSentenceAudio(text);
   }
-  function freeWordTimer(s) {
+  function freeWordTimer(s, durationMs) {
     // Timer-estimated karaoke highlighting (the free audio path has no
-    // word-boundary events in the browser).
+    // word-boundary events in the browser). Kokoro knows the true
+    // audio duration, so its timer is exact; Edge/premium estimate
+    // from word count.
     var words = s.text.split(/\s+/).filter(Boolean);
-    var estMs = (words.length / (175 * currentRate())) * 60000;
+    var estMs = (typeof durationMs === "number" && durationMs > 0) ? durationMs : (words.length / (175 * currentRate())) * 60000;
     var wi = 0;
     clearTimeout(state.freeTimer);
     var step = Math.max(120, estMs / Math.max(1, words.length));
@@ -1460,23 +1774,22 @@
       state.currentSentence = idx;
       highlightSentence(idx);
       updateProgress();
-      freeWordTimer(s);
       state.freeAudio = null;
       freeFetchAudio(s.text).then(function (audio) {
         if (!state.playing || state.engine !== "free") return;
         state.freeAudio = audio;
+        freeWordTimer(s, audio._durMs);
         audio.onended = function () { idx++; next(); };
         audio.onerror = function () { failPlayback("The audio for this sentence failed to play."); };
         if (state.paused) return; // resume will play it
         audio.play().catch(function () { failPlayback("Audio playback was blocked by the browser — tap Play again."); });
       }).catch(function () {
-        // Both free transports failed. Never fall back to a robotic
-        // device voice — say so honestly instead.
+        // No human-sounding free engine could play. Never fall back
+        // to a robotic voice — say so honestly instead.
         state.playing = false; state.paused = false;
-        state.googleFailed = true;
         setPlayButton(false);
         updateVoiceEmptyState();
-        failPlayback("Free AI voices aren't answering in this browser — try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.");
+        failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.");
       });
     }
     next();
@@ -1488,10 +1801,25 @@
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function () {
-      // Same loud handling as playback: say Microsoft is down and
-      // do NOT silently play the Google voice as if it were this voice.
+      // Same loud handling as playback: say Microsoft is down, switch
+      // the free engine to Kokoro, and do NOT play any other voice
+      // as if it were this one.
       markEdgeDown();
     });
+  }
+  function previewKokoroVoice(ev) {
+    var sample = languageEntry(currentLanguage()).sample;
+    kokoroSynthesize(sample, ev.name).then(function (res) {
+      var a = new Audio(URL.createObjectURL(res.blob));
+      a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
+      a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
+    }).catch(function (err) {
+      toast("Couldn't load the on-device voices (" + (err && err.message ? err.message : "download failed") + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
+    });
+  }
+  function previewFreeVoice(entry, engine) {
+    if (engine === "edge") previewEdgeVoice(entry);
+    else previewKokoroVoice(entry);
   }
 
   function setPlayButton(playing) {
@@ -1503,9 +1831,12 @@
     var nameEl = $("bottomVoiceName");
     if (!nameEl) return;
     if (premiumActive()) { nameEl.textContent = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)"; return; }
-    if (state.edgeDown) { nameEl.textContent = "Voice: Google fallback — Microsoft voices unavailable in this browser"; return; }
+    if (state.edgeDown) { nameEl.textContent = "Voice: Kokoro (on-device) — Microsoft voices unavailable in this browser"; return; }
     var choice = currentVoiceChoice();
-    nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
+    if (choice.engine === "edge") nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
+    else if (choice.kokoroVoice) nameEl.textContent = "Voice: " + kokoroVoiceByName(choice.kokoroVoice).label + " · on your device (free)";
+    else nameEl.textContent = "Voice: — no free voice for this language yet";
+    updateDownloadLabel();
   }
 
   // Skip ~15 seconds of speech: for premium audio, seek the audio element;
@@ -1704,6 +2035,122 @@
     next();
   }
 
+  /* ---------------- download the article as one audio file ----------------
+   * "⬇ Download audio" renders the whole loaded article — the same
+   * cleaned, core-only text, in the currently selected voice — into
+   * ONE audio file and downloads it, named after the article title.
+   * Kokoro (free, on-device): sentences are synthesized to raw
+   * samples, joined, and encoded as one WAV. Edge / premium: each
+   * sentence is an MP3 stream and the MP3 frames are concatenated —
+   * MP3 is a frame stream, so the joined file plays as one track in
+   * browsers and podcast players. Only human-sounding engines are
+   * ever used — there is no robotic fallback anywhere in this app.
+   * Long articles take a while: honest progress ("Rendering
+   * audio… sentence 4 of 22") with a Cancel button, so the UI never
+   * looks dead. */
+  function slugifyTitle(title) {
+    var s = String(title || "auralis-reading").toLowerCase()
+      .replace(/['’]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return s || "auralis-reading";
+  }
+  function downloadFormat() {
+    if (premiumActive()) return "mp3";
+    return currentVoiceChoice().engine === "edge" ? "mp3" : "wav";
+  }
+  function updateDownloadLabel() {
+    var btn = $("downloadAudioBtn");
+    if (!btn) return;
+    var fmt = downloadFormat().toUpperCase();
+    btn.textContent = state.downloading ? "Rendering audio…" : "⬇ Download audio (" + fmt + ")";
+    btn.disabled = !!state.downloading;
+  }
+  function showDownloadProgress(label, pct) {
+    var box = $("downloadProgressBox");
+    if (box) box.hidden = false;
+    var t = $("downloadProgressText");
+    if (t) t.textContent = label;
+    var f = $("downloadProgressFill");
+    if (f) f.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+  }
+  function hideDownloadProgress() {
+    var box = $("downloadProgressBox");
+    if (box) box.hidden = true;
+  }
+  function downloadAudio() {
+    if (state.downloading) return;
+    if (!state.sentences.length) { toast("Open an article first."); return; }
+    var total = state.sentences.length;
+    var fmt = downloadFormat();
+    var isWav = fmt === "wav";
+    var choice = currentVoiceChoice();
+    var voiceId = isWav ? choice.kokoroVoice : (choice.engine === "edge" ? choice.edgeVoice : null);
+    state.downloading = true;
+    state.downloadCancelled = false;
+    updateDownloadLabel();
+    showDownloadProgress("Rendering audio… sentence 1 of " + total, 0);
+    var parts = []; // Kokoro: Float32Arrays · Edge/premium: MP3 blobs
+    var sampleRate = 24000;
+    var i = 0;
+    function renderNext() {
+      if (state.downloadCancelled) {
+        state.downloading = false;
+        hideDownloadProgress();
+        updateDownloadLabel();
+        toast("Download cancelled.");
+        return;
+      }
+      if (i >= total) { finishDownload(); return; }
+      showDownloadProgress("Rendering audio… sentence " + (i + 1) + " of " + total, Math.round(i / total * 100));
+      var text = state.sentences[i].text;
+      var p;
+      if (premiumActive()) p = premiumFetchAudio(text);
+      else if (choice.engine === "edge") p = edgeSynthesize(text, voiceId, localeOf(voiceId));
+      else p = kokoroSynthesize(text, voiceId).then(function (res) { sampleRate = res.sampleRate || 24000; return res.samples; });
+      p.then(function (part) {
+        if (state.downloadCancelled) { renderNext(); return; }
+        parts.push(part);
+        i++;
+        renderNext();
+      }).catch(function (err) {
+        state.downloading = false;
+        hideDownloadProgress();
+        updateDownloadLabel();
+        toast("Couldn't render the audio file (" + (err && err.message ? err.message : "render failed") + "). Try again, or switch to the free on-device voice.");
+      });
+    }
+    function finishDownload() {
+      var blob;
+      if (isWav) {
+        var totalLen = 0;
+        parts.forEach(function (s) { totalLen += s.length; });
+        var joined = new Float32Array(totalLen);
+        var off = 0;
+        parts.forEach(function (s) { joined.set(s, off); off += s.length; });
+        blob = float32ToWavBlob(joined, sampleRate);
+      } else {
+        blob = new Blob(parts, { type: "audio/mpeg" });
+      }
+      var filename = slugifyTitle(state.title) + "." + fmt;
+      // Test seam: QA reads the last download without a real click.
+      if (typeof window !== "undefined") window.__AURALIS_LAST_DOWNLOAD = { filename: filename, size: blob.size, type: blob.type, blob: blob };
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+      state.downloading = false;
+      hideDownloadProgress();
+      updateDownloadLabel();
+      toast("Audio downloaded: " + filename);
+    }
+    renderNext();
+  }
+
   function togglePlayPause() {
     if (!state.sentences.length) { toast("Paste a link, some text, or open a sample first."); return; }
     if (state.playing && !state.paused) {
@@ -1758,9 +2205,9 @@
     none: { label: "Free AI voices", fields: [] },
     elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free Microsoft AI voices above are unlimited with no key at all." },
     cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free Microsoft AI voices above are unlimited with no key at all." },
-    openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Microsoft AI voices are free and unlimited." },
-    azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Microsoft AI voices are free and unlimited." },
-    google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Microsoft AI voices are free and unlimited." },
+    openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
+    azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
+    google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
     "generic-tts": { label: "My own TTS server", keyLabel: "API key (leave blank for local servers)", keyPh: "Optional", voiceLabel: "Voice name", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", help: "Any OpenAI-compatible /audio/speech endpoint — a local Kokoro or Piper server, or a hosted TTS API with the same shape. Kokoro sounds noticeably robotic next to the voices above, so treat it as a last resort, not a default.", freeNote: "Your server, your cost — usually free if it runs on your own computer." }
   };
   var elevenLabsVoices = []; // fetched from the account: [{voice_id, name}]
@@ -2449,6 +2896,8 @@
     });
     pitch.addEventListener("input", persistVoiceChoice);
     $("saveToLibraryBtn").addEventListener("click", function () { saveToLibrary(false); });
+    $("downloadAudioBtn").addEventListener("click", function () { downloadAudio(); });
+    $("downloadCancelBtn").addEventListener("click", function () { state.downloadCancelled = true; });
     $("copyTextBtn").addEventListener("click", function () {
       var text = state.title + "\n\n" + state.paragraphs.join("\n\n");
       function done() { toast("Article text copied."); }
@@ -2582,7 +3031,7 @@
     });
 
     // Voices: curated AI voices only — no device/browser voices,
-    // so there is nothing to wait for from speechSynthesis.
+    // so there is nothing to wait for from device voices.
     // Probe the Microsoft transport shortly after load, so a browser
     // where it can't answer says so (banner + greyed-out cards)
     // before the visitor picks a voice.
