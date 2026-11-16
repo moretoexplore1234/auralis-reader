@@ -40,6 +40,27 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.8 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.8 — one tap, every voice, same behaviour**
+
+Why: Carl tested v1.4.7 on his Pixel (Nov 16, 6:12 PM) and the voice still didn't work — gibberish/foreign sounds, and Play on a different voice didn't load at all. A device-browser test on his actual Pixel 8 Pro in-app browser (Nov 16, 6:13–6:17 PM) REPRODUCED the failure and found the real root cause — not a stale version (footer v1.4.7), not a wrong language (English, Kokoro Heart, player lines correct). The model download completes, but first-sentence/preview synthesis on that phone takes MINUTES, and by the time the audio is ready the tap's user gesture has expired, so the browser blocks `audio.play()`. The retry then re-synthesized from scratch, so its gesture expired too — the loop repeated forever, for Heart Play, Heart Preview, and a switched voice (Kokoro Adam: the switch visibly works, Language stays English, same blocked failure). No audio at all was captured in the session (0% progress throughout); the "gibberish" Carl hears is most likely a tiny clipped fragment before the block. Carl's added direction (Nov 16, 6:19 PM): make it so browsers won't block ANY of the voices and it works CONSISTENTLY — every voice, every tap, same behaviour.
+
+- **Retry never re-synthesizes:** synthesized audio is cached (voice + speed + text, 16 entries; Edge audio cached the same way). A retry after a blocked play replays the ready audio instantly — zero new synthesis calls. In-flight promises are cached too, so a prefetch and a Play tap for the same sentence share one synthesis. A failed synthesis is NOT cached, so a later tap really retries.
+- **One audio path for all voices:** every `play()` in the app goes through `playAudioElement()`. It unlocks/resumes a shared AudioContext and routes the element through it, so playback is governed by the running context instead of a gesture from minutes earlier. `unlockAudio()` is called inside every tap gesture (Play/Pause, Preview, Listen/sample/URL/paste taps) — never relying on a gesture from minutes earlier. Where the browser has no AudioContext, the element plays directly. Routing only happens through a RUNNING context (routing through a suspended one would resolve `play()` yet stay silent).
+- **Warm the engine at load:** once the model loads, the default-voice preview line is synthesized in the background (heating the ONNX session and caching the preview), and an open article's first sentence is prefetch-warmed. The first real tap no longer pays the cold-start cost. Synthesis is serialized through one queue so the background warm-up can never race a Play tap.
+- **No more false promises:** the old "tap Play again and it will start right away (the voice is downloaded now)" is gone — it was false while the retry re-synthesized. The blocked-play message now says the voice took a while to get ready and the next tap starts at once from the ready audio. Same honest wording on Preview and premium blocks.
+- **Honest slow state:** past 30s, the loading labels say "this phone is slow at it, still working…" with the elapsed seconds, on both the Play and Preview watchdogs, and on the tap-during-wait status.
+- **Kept from v1.4.7:** English defaults, one-tap autoplay, warm-up banner, deduped statuses, spaced sample text, new preview sentence, Stop above the sticky player, real Download ZIP link (now `v1.4.8.zip`).
+- **Service worker:** cache bumped to `auralis-v1.4.8`. Footer shows `v1.4.8`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.8
+git push origin v1.4.8
+gh release create v1.4.8 --title "v1.4.8 — one tap, every voice, same behaviour" --notes-file /tmp/auralis-v1.4.8-release-notes.md
+```
+
 ### v1.4.6 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.6 — faster first sound, a Download button that downloads, English always**

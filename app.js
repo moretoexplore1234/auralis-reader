@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.7";
+  var APP_VERSION = "v1.4.8";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -373,6 +373,7 @@
   // (v1.4.6 check: 60s of silence, then a second tap needed).
   function openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt, opts) {
     var autoplay = !!(opts && opts.autoplay);
+    if (autoplay) unlockAudio(); // v1.4.8: a Listen tap IS the gesture — unlock the audio context now, before the radar sweep and model load eat it.
     // Floor is 5 words, not 20 (v1.4.4): a short caption the user
     // pasted on purpose ("How to Read a Comparative Market Analysis
     // in Del Mar", 10 words) is real reading material. Junk pages
@@ -2388,6 +2389,7 @@
       state.warmingUp = false;
       hideKokoroLoading();
       if (!state.playing) setPlayButton(false); // restore "▶ Play"
+      warmUpSynthesis();
     }).catch(function () {
       // Quiet failure: the honest error shows when the visitor
       // actually taps Play or Preview (which retries). A visitor
@@ -2396,6 +2398,27 @@
       hideKokoroLoading();
       if (!state.playing) setPlayButton(false);
     });
+  }
+  // v1.4.8: warm the TTS engine at load, not at first Play. The
+  // model download alone does not heat the ONNX session — the first
+  // synthesis after load pays the whole cold-start cost (minutes on
+  // Carl's Pixel), and by the time its audio is ready the tap's
+  // gesture has expired. So once the model is loaded, synthesize
+  // the default-voice preview line right away, in the background:
+  // it heats the session AND caches the preview, so a later Preview
+  // tap plays instantly. If an article is already open, its first
+  // sentence is prefetch-warmed too. Silent and best-effort — a
+  // failure here changes nothing; Play synthesizes on demand.
+  var warmupSynthDone = false;
+  function warmUpSynthesis() {
+    if (warmupSynthDone || kokoro.failed || !kokoro.tts) return;
+    if (currentVoiceChoice().engine !== "kokoro") return;
+    warmupSynthDone = true;
+    try {
+      var sample = languageEntry(currentLanguage()).sample;
+      kokoroSynthesize(sample, currentKokoroVoice()).catch(function () {});
+      prefetchFirstSentence();
+    } catch (e) {}
   }
   // Start the warm-up shortly after load, so the page renders
   // first. Skipped where the free engine needs no model (real
@@ -2472,10 +2495,110 @@
     }
     return new Blob([buf], { type: "audio/wav" });
   }
+  // v1.4.8: ONE audio path for every voice, every tap (Carl, Nov 16:
+  // "make it so browsers won't block ANY of the voices and it works
+  // CONSISTENTLY"). A device-browser test on his Pixel 8 Pro proved
+  // the failure: first-sentence/preview synthesis on that phone takes
+  // MINUTES, and by the time the audio is ready the tap's user
+  // gesture has expired, so the browser blocks audio.play() — and
+  // the retry re-synthesized from scratch, so the loop repeated
+  // forever. Every play() in the app goes through playAudioElement().
+  // It (1) creates/resumes a shared AudioContext — unlockAudio() is
+  // called inside the tap gesture itself, so the context is running
+  // before any synthesis starts; (2) routes the element through
+  // that running context, so playback is governed by the context
+  // instead of a gesture from minutes earlier; (3) calls play() and
+  // returns its promise. No other code calls .play() on an audio
+  // element. Where the browser has no AudioContext (old browsers,
+  // the jsdom harness), the element plays directly — same call,
+  // same result. audioUnlockCalls is the QA seam: the harness
+  // asserts resume() was called from inside the tap handler.
+  var audioCtx = null;
+  var audioUnlockCalls = 0;
+  function ensureAudioContext() {
+    if (audioCtx) return audioCtx;
+    try {
+      var AC = (typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext)) || null;
+      if (!AC) return null;
+      audioCtx = new AC();
+    } catch (e) { audioCtx = null; }
+    return audioCtx;
+  }
+  function unlockAudio() {
+    // Call ONLY from inside a tap/keypress handler: creating the
+    // context during the gesture is what makes it start "running"
+    // instead of "suspended" (a context created later, outside a
+    // gesture, starts suspended and its resume() is refused).
+    audioUnlockCalls++;
+    var ctx = ensureAudioContext();
+    if (ctx && ctx.state === "suspended") {
+      try { var p = ctx.resume(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    }
+    return ctx;
+  }
+  function routeAudioElement(a) {
+    if (!a || a._auralisRouted) return;
+    var ctx = ensureAudioContext();
+    // Only route through a RUNNING context. Routing through a
+    // suspended one would make play() resolve yet stay silent (the
+    // context renders nothing) — worse than a refused play(), which
+    // at least takes the honest failure path and lets the next tap
+    // retry from cache. A suspended context means no tap has
+    // unlocked audio yet (e.g. deep-link autoplay); the element
+    // then plays directly under the browser's own autoplay policy.
+    if (!ctx || ctx.state !== "running" || typeof ctx.createMediaElementSource !== "function") return;
+    try {
+      var src = ctx.createMediaElementSource(a);
+      src.connect(ctx.destination);
+      a._auralisRouted = true;
+    } catch (e) { /* one source per element: a second call throws; the flag above normally prevents it */ }
+  }
+  function playAudioElement(a) {
+    if (!a) return Promise.reject(new Error("No audio to play."));
+    unlockAudio();
+    routeAudioElement(a);
+    try {
+      var p = a.play();
+      return (p && p.then) ? p : Promise.resolve();
+    } catch (e) { return Promise.reject(e); }
+  }
   // Synthesize one sentence with Kokoro. Returns { blob, durationSec,
   // samples, sampleRate }. If the WebGPU run yields no samples (a
   // known readback quirk), reload once on WASM and retry.
+  // v1.4.8: synthesized audio is CACHED, keyed by voice + speed +
+  // text — a retry after a blocked play() must play the ready audio
+  // INSTANTLY, never re-synthesize. The device-browser test proved
+  // the old loop: every retry re-synthesized from scratch (minutes
+  // on that phone), so its gesture expired too and it blocked again,
+  // forever. A failed synthesis is NOT cached (the entry is dropped
+  // on rejection, so a later tap really retries — v1.4.6 rule).
+  // Synthesis is also serialized through one queue: concurrent
+  // generate() calls on the same on-device session are not safe,
+  // and the background warm-up synthesis must never race a Play tap.
+  // In-flight promises are cached too, so a prefetch and a Play tap
+  // for the same sentence share one synthesis instead of paying
+  // twice. Bounded (16 entries) so a long article doesn't hold
+  // every sentence's audio in memory.
+  var synthCache = {};
+  var synthCacheOrder = [];
+  var SYNTH_CACHE_MAX = 16;
+  var synthQueue = Promise.resolve();
+  function synthCacheKey(text, voiceId) {
+    var speed = Math.max(0.5, Math.min(2, currentRate() || 1));
+    return (voiceId || DEFAULT_KOKORO_VOICE) + "|" + speed + "|" + String(text);
+  }
   function kokoroSynthesize(text, voiceId) {
+    var key = synthCacheKey(text, voiceId);
+    if (synthCache[key]) return synthCache[key];
+    var task = synthQueue.then(function () { return synthOnceKokoro(text, voiceId); });
+    synthQueue = task.catch(function () {});
+    synthCache[key] = task;
+    synthCacheOrder.push(key);
+    while (synthCacheOrder.length > SYNTH_CACHE_MAX) { delete synthCache[synthCacheOrder.shift()]; }
+    task.then(null, function () { if (synthCache[key] === task) delete synthCache[key]; });
+    return task;
+  }
+  function synthOnceKokoro(text, voiceId) {
     return ensureKokoro().then(function (tts) {
       var speed = Math.max(0.5, Math.min(2, currentRate() || 1));
       return tts.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed }).then(function (result) {
@@ -2506,8 +2629,26 @@
       return a;
     });
   }
+  // v1.4.8: the Microsoft (Edge) path gets the same cache as Kokoro
+  // — one rule for every voice: a retry replays ready audio, never
+  // re-fetches. The Edge fetch is a fast network call, not minutes
+  // of on-device inference, but the retry rule is uniform so no
+  // voice can behave differently from the others.
+  var edgeCache = {};
+  var edgeCacheOrder = [];
+  var EDGE_CACHE_MAX = 8;
   function edgeSentenceAudio(text) {
-    return edgeSynthesize(text, currentEdgeVoice(), localeOf(currentEdgeVoice())).then(function (blob) {
+    var v = currentEdgeVoice();
+    var key = "edge|" + v + "|" + localeOf(v) + "|" + String(text);
+    var p = edgeCache[key];
+    if (!p) {
+      p = edgeSynthesize(text, v, localeOf(v));
+      edgeCache[key] = p;
+      edgeCacheOrder.push(key);
+      while (edgeCacheOrder.length > EDGE_CACHE_MAX) { delete edgeCache[edgeCacheOrder.shift()]; }
+      p.then(null, function () { if (edgeCache[key] === p) delete edgeCache[key]; });
+    }
+    return p.then(function (blob) {
       var url = URL.createObjectURL(blob);
       var a = new Audio(url);
       a.addEventListener("ended", function () { URL.revokeObjectURL(url); });
@@ -2724,7 +2865,7 @@
         // "Pause" while paused (a sentence fetched after a pause
         // tap used to do exactly that).
         setPlayButton(true);
-        audio.play().then(function () {
+        playAudioElement(audio).then(function () {
           // Audio actually started: only now does this sentence
           // count toward the progress bar.
           state.waitingFirstAudio = false;
@@ -2732,9 +2873,13 @@
           updateProgress();
         }).catch(function () {
           // A play() this late can be refused because the tap's
-          // user gesture has expired while the model downloaded —
-          // the voice IS downloaded now, so a second tap starts
-          // right away. Say that plainly (v1.4.4).
+          // user gesture expired while the model downloaded and
+          // the first sounds were made — v1.4.8 routes playback
+          // through the AudioContext unlocked by the tap, and the
+          // first sounds are cached, so a second tap now plays
+          // them at once instead of re-synthesizing (the old
+          // message promised an instant start while the
+          // retry re-synthesized for minutes and blocked again).
           state.waitingFirstAudio = false;
           stopLoadWatchdog();
           if (autoplay) {
@@ -2748,7 +2893,7 @@
             toast("The voice is ready — tap Play to start listening.");
             return;
           }
-          failPlayback("The browser blocked the sound because the voice took a while to download — tap Play again and it will start right away (the voice is downloaded now).");
+          failPlayback("The browser blocked the sound because the voice took a while to get ready. Tap Play again — the first sounds are ready now and will start at once.");
         });
       }).catch(function (err) {
         // No human-sounding free engine could play. Never fall back
@@ -2787,7 +2932,7 @@
       setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
-      a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
+      playAudioElement(a).catch(function () { toast("Playback was blocked — tap Preview again, the preview is ready now and will play at once."); });
     }).catch(function () {
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
@@ -2825,7 +2970,7 @@
       setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(res.blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
-      a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
+      playAudioElement(a).catch(function () { toast("Playback was blocked — tap Preview again, the preview is ready now and will play at once."); });
     }).catch(function (err) {
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
@@ -2835,6 +2980,7 @@
     });
   }
   function previewFreeVoice(entry, engine, btn) {
+    unlockAudio(); // v1.4.8: the context must be unlocked by THIS tap — a preview synthesized minutes later plays through it, not through a stale gesture.
     if (engine === "edge") previewEdgeVoice(entry, btn);
     else previewKokoroVoice(entry, btn);
   }
@@ -2870,7 +3016,10 @@
       var secs = Math.round((Date.now() - loadWatchStartedAt) / 1000);
       var pct = "";
       try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
-      setPlayButtonLabel(kokoro.tts ? "⏳ Making the first sounds… · " + secs + "s" : "⏳ Loading voices…" + pct + " · " + secs + "s");
+      // v1.4.8: past 30s on a slow phone, say so — a spinner with a
+      // growing number and no explanation still reads as stuck.
+      var slowNote = (secs >= 30) ? " — this phone is slow at it, still working…" : "";
+      setPlayButtonLabel(kokoro.tts ? "⏳ Making the first sounds… · " + secs + "s" + slowNote : "⏳ Loading voices…" + pct + " · " + secs + "s" + slowNote);
     }, 5000);
   }
   function stopLoadWatchdog() { if (loadWatchTimer) { clearInterval(loadWatchTimer); loadWatchTimer = null; } }
@@ -2889,7 +3038,8 @@
       var secs = Math.round((Date.now() - previewWatchStartedAt) / 1000);
       var pct = "";
       try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
-      btn.textContent = kokoro.tts ? "⏳ Making the sounds… · " + secs + "s" : "⏳ Loading…" + pct + " · " + secs + "s";
+      var slowNote = (secs >= 30) ? " — this phone is slow at it, still working…" : "";
+      btn.textContent = kokoro.tts ? "⏳ Making the sounds… · " + secs + "s" + slowNote : "⏳ Loading…" + pct + " · " + secs + "s" + slowNote;
     }, 5000);
   }
   function stopPreviewWatchdog() { if (previewWatchTimer) { clearInterval(previewWatchTimer); previewWatchTimer = null; } }
@@ -3102,7 +3252,7 @@
         audio.playbackRate = 1; // premium audio is pre-rendered at natural speed
         audio.onended = function () { URL.revokeObjectURL(url); idx++; next(); };
         audio.onerror = function () { toast("Premium audio failed to play — using the free Microsoft AI voice instead."); state.playing = false; playFree(idx); };
-        audio.play().then(function () { state.progressSentence = idx; updateProgress(); }).catch(function () { toast("Audio playback was blocked — tap play again."); state.playing = false; setPlayButton(false); });
+        playAudioElement(audio).then(function () { state.progressSentence = idx; updateProgress(); }).catch(function () { toast("Playback was blocked — tap Play again, it will start from where it stopped."); state.playing = false; setPlayButton(false); });
       }).catch(function (err) {
         toast("Premium voice failed (" + (err && err.message ? err.message : "error") + ") — using the free Microsoft AI voice instead.");
         state.playing = false;
@@ -3239,10 +3389,11 @@
     var secs = loadWatchStartedAt ? Math.round((Date.now() - loadWatchStartedAt) / 1000) : 0;
     var pct = "";
     try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
-    if (kokoro.tts) return "Still making the first sounds — " + secs + "s in. Tap Stop to cancel.";
+    if (kokoro.tts) return "Still making the first sounds — " + secs + "s in" + (secs >= 30 ? " — this phone is slow at it, still working" : "") + ". Tap Stop to cancel.";
     return "Still downloading the voice model once (~90MB)" + (pct ? " — " + pct : "") + (secs ? " · " + secs + "s" : "") + ". Tap Stop to cancel.";
   }
   function togglePlayPause() {
+    unlockAudio(); // v1.4.8: unlock in THIS tap's gesture, every tap — the audio may only be ready minutes later, and a stale gesture is what the browser blocks.
     if (!state.sentences.length) { toast("Paste a link, some text, or open a sample first."); return; }
     // v1.4.6: while the first sounds are still being prepared
     // (voice model downloading, or first sentence synthesizing),
@@ -3261,12 +3412,12 @@
       return;
     }
     if (state.playing && state.paused) {
-      if (state.engine === "premium" && state.premiumAudio) { var pp1 = state.premiumAudio.play(); state.paused = false; setPlayButton(true); if (pp1 && pp1.then) pp1.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
+      if (state.engine === "premium" && state.premiumAudio) { var pp1 = playAudioElement(state.premiumAudio); state.paused = false; setPlayButton(true); if (pp1 && pp1.then) pp1.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
       else if (state.engine === "free") {
         state.paused = false; setPlayButton(true);
         // Resume: the sentence counts only once its audio actually
         // resumes (v1.4.2 — same rule as a fresh Play).
-        if (state.freeAudio) { var pp2 = state.freeAudio.play(); if (pp2 && pp2.then) pp2.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
+        if (state.freeAudio) { var pp2 = playAudioElement(state.freeAudio); if (pp2 && pp2.then) pp2.then(function () { state.progressSentence = Math.max(state.progressSentence, state.currentSentence); updateProgress(); }).catch(function () {}); }
       }
       return;
     }
@@ -3506,7 +3657,7 @@
       premiumFetchAudio("Hello — this is Auralis, reading in your premium voice.").then(function (blob) {
         setBusy(test, false, "▶ Test voice");
         var audio = new Audio(URL.createObjectURL(blob));
-        audio.play().catch(function () { toast("Test audio was ready but playback was blocked — tap again."); });
+        playAudioElement(audio).catch(function () { toast("Test audio was ready but playback was blocked — tap again."); });
         toast(meta.label + " is working.");
       }).catch(function (err) {
         setBusy(test, false, "▶ Test voice");
@@ -4316,6 +4467,11 @@
         warmUpVoices: warmUpVoices,
         maybeWarmUpVoices: maybeWarmUpVoices,
         prefetchFirstSentence: prefetchFirstSentence,
+        warmUpSynthesis: warmUpSynthesis,
+        warmupSynthDone: function () { return warmupSynthDone; },
+        audioUnlockCalls: function () { return audioUnlockCalls; },
+        audioCtxState: function () { return audioCtx ? audioCtx.state : "none"; },
+        synthCacheSize: function () { return Object.keys(synthCache).length; },
         kokoroState: function () { return { tts: !!kokoro.tts, loading: !!kokoro.loading, failed: !!kokoro.failed }; },
         kokoroVoices: KOKORO_VOICES,
         appState: state
