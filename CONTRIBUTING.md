@@ -40,6 +40,29 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.6 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.6 — faster first sound, a Download button that downloads, English always**
+
+Why: Carl tested v1.4.5 on his Pixel (Nov 16) and reported three things. (1) "I click to load. It didn't load at all." A cloud-Chrome diagnostic (Nov 16, 1:35–1:41 PM) found the preview sits silent for ~25 seconds before the first sound (model generation on-device) — longer on a phone — and a tap that sits silent that long reads as dead. The same check also found the Play button treats a second tap during the model load as a pause, so an impatient double-tap left the download running invisibly with the button back on "▶ Play" and nothing ever playing. (2) "It says download Auralis but it didn't actually give me a place to download it to or from." Verified in code: the big "⬇ Download Auralis" button was only an anchor to `#get-the-app` (it scrolled, it downloaded nothing), and "Install as an app" depends on `beforeinstallprompt`, which never fires in in-app WebViews — so the button silently did nothing. (3) Playback "reading in some foreign language... random sounds." The diagnostic did NOT reproduce this with defaults (Kokoro Heart, English, clean English audio), but it confirmed the mechanism: switching the Language menu to Spanish swaps the voice to Spanish Kokoro Dora — so a persisted non-English Language choice on Carl's phone would make English text come out as foreign-accented gibberish.
+
+- **Speed — warm-up on page load:** the Kokoro model (~90MB) now starts downloading/loading ~1.2s after the page loads, not on first Play, with a visible "Getting the voice ready… %" indicator (load box + Play button mirror). On a metered/slow connection it waits for the first tap instead of spending data unasked. A warm-up failure stays quiet (no error banner for someone who only came to read); the honest error shows when Play/Preview is tapped, and that tap really retries (a failed load used to be sticky for the session, so "tap Play to retry" was a lie). Model files are cached by transformers.js (Cache Storage) and voice files by kokoro-js (its own "kokoro-voices" bucket), so the second visit reuses them.
+- **Speed — English voice files primed upfront:** the 8 English voice files (~510KB each, `huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/<id>.bin` — URL pattern verified against kokoro-js sources) are fetched in the background on load to prime the browser cache. English only, best-effort, silent on failure.
+- **Speed — first sentence pre-synthesized:** as soon as an article loads, its first sentence is synthesized in the background, so tapping Play starts audio immediately from a ready buffer.
+- **Tap feedback, the whole wait:** Play is not a pause toggle while the first sounds are being prepared (a tap just says how far along it is; Stop cancels). The load watchdog now covers the download AND the first synthesis, ticking with elapsed seconds ("⏳ Making the first sounds… · 12s"). Preview buttons mirror the download % and tick with elapsed time too — no more silent 25s.
+- **Download Auralis actually downloads:** the big button now points at this version's GitHub ZIP (`archive/refs/tags/v1.4.6.zip`, set from `APP_VERSION` at runtime) — and triggers the install prompt when the browser offers one. The "Download the files (ZIP)" link is relabelled plainly ("Download Auralis files (ZIP) — the app's code, for your computer") and points at the same versioned ZIP.
+- **Install button is honest:** when no install prompt is available it says so, shows the manual steps, and offers a "Copy the Auralis link" button; in an in-app WebView it says that browser can't install or save files and to open the page in Chrome. Already-installed state is detected and shown.
+- **Everything defaults to English, in the site itself:** Language = English, voice = Kokoro Heart (`af_heart`), preview in English. Any stale saved non-English language/voice from an earlier visit is reset to English on load, with a plain note in the voice menu ("Reset to English — tap another language if you want it"). A deliberate pick inside a visit still sticks. On the first run of a new version, a toast says which voice and language the app is actually using.
+- **Safety nets (kept):** every voice card shows its language plainly; the player shows "Reading with Kokoro Heart · English" while playing; a voice/text language mismatch (e.g. Japanese voice + English article) is refused with a plain reason instead of playing garbled sounds; voice IDs (not labels) identify voices, since labels repeat across languages ("Kokoro Alpha" is both Hindi and Japanese).
+- **Service worker:** cache bumped to `auralis-v1.4.6`. Footer shows `v1.4.6`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.6
+git push origin v1.4.6
+gh release create v1.4.6 --title "v1.4.6 — faster first sound, a Download button that downloads, English always" --notes-file /tmp/auralis-v1.4.6-release-notes.md
+```
+
 ### v1.4.5 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.5 — caption pastes work from the link bar, block pages are never read aloud, another proxy leg**

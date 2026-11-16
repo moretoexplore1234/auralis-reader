@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.5";
+  var APP_VERSION = "v1.4.6";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -156,7 +156,11 @@
     edgeDown: false,       // Microsoft voices proven unavailable in this browser — Kokoro is the free engine instead
     edgeProbed: false,     // the on-load Edge handshake probe has run once (Edge browsers only)
     kokoroFailed: false,   // the on-device Kokoro model could not be loaded
+    warmingUp: false,      // v1.4.6: background model warm-up in flight (page load, not first Play)
+    prefetchAudio: null,   // v1.4.6: first sentence's audio, synthesized at article load
+    prefetchKey: null,     // v1.4.6: title + first sentence the prefetch belongs to
     finished: false,       // the current article actually played to the end
+    waitingFirstAudio: false, // v1.4.6: true from a fresh Play until the first sentence's audio actually starts — the only window in which Play is a "still loading" tap, never a pause
     removedParagraphs: [], // paragraphs the Content Radar cut (restorable)
     radarKeptIndices: [],  // original paragraph index of each kept paragraph
     radarKept: 0,
@@ -414,6 +418,7 @@
       }
       buildModel(title, source, byline, keptText);
       renderRadarResult();
+      prefetchFirstSentence(); // v1.4.6: first sentence ready before Play is tapped
       if (typeof resumeAt === "number" && state.sentences.length) {
         var target = clamp(resumeAt, 0, state.sentences.length - 1);
         state.currentSentence = target;
@@ -1526,6 +1531,28 @@
     });
     return found || KOKORO_VOICES.en[0];
   }
+  // v1.4.6: which language a Kokoro voice speaks, by its ID. The
+  // voice ID is the ground truth — labels are NOT unique across
+  // languages ("Kokoro Alpha" is both Hindi hf_alpha and Japanese
+  // jf_alpha; "Kokoro Dora" is both Spanish and Portuguese), so a
+  // label alone can never identify a voice.
+  function kokoroLangOf(name) {
+    var found = null;
+    Object.keys(KOKORO_VOICES).forEach(function (code) {
+      KOKORO_VOICES[code].forEach(function (v) { if (v.name === name) found = code; });
+    });
+    return found;
+  }
+  // Any free voice ID (Kokoro or Microsoft) -> its language code, or null.
+  function voiceLangOf(name) {
+    var k = kokoroLangOf(name);
+    if (k) return k;
+    var found = null;
+    VOICE_LANGUAGES.forEach(function (l) {
+      l.voices.forEach(function (v) { if (v.name === name) found = l.code; });
+    });
+    return found;
+  }
   function freeVoiceLabel(choice) {
     if (!choice) choice = currentVoiceChoice();
     if (choice.engine === "edge") return edgeVoiceByName(choice.edgeVoice).label;
@@ -1543,6 +1570,79 @@
     var ok = false;
     VOICE_LANGUAGES.forEach(function (l) { if (l.code === c) ok = true; });
     return ok ? c : "en";
+  }
+  // v1.4.6: guess the language of a piece of text, so a voice in the
+  // wrong language never reads it as garbage. Script first (a text
+  // that is mostly CJK/Hebrew/Arabic/Devanagari is that language),
+  // then stopwords for Latin-script text. Returns "en", "es", "fr",
+  // "de", "it", "pt", "zh", "ja", "he", "ar", "hi", or "latin"
+  // (Latin letters, no clear signal — could be any Latin language).
+  var TEXT_STOPWORDS = {
+    en: ["the", "and", "of", "to", "in", "is", "you", "that", "it", "was", "for", "on", "are", "with", "they", "this", "have", "from", "not", "but", "what", "were", "when", "your", "there", "which", "their", "will", "about", "would", "like", "into", "time", "more", "other", "some", "could", "people", "than", "first", "been", "call", "who", "now", "find", "long", "down", "day", "come", "made", "part"],
+    es: ["el", "la", "los", "las", "que", "una", "por", "con", "para", "como", "pero", "sus", "este", "porque", "esta", "entre", "cuando", "muy", "sobre", "hasta", "donde", "desde", "todo", "durante", "todos", "contra", "ellos", "antes", "algunos", "otro", "tanto", "mucho", "quienes", "nada", "muchos", "ella", "estar", "estas", "algo", "nosotros"],
+    fr: ["les", "des", "une", "dans", "pour", "qui", "sur", "plus", "avec", "son", "nous", "vous", "ils", "comme", "mais", "tout", "tous", "toute", "toutes", "notre", "votre", "leur", "leurs", "cette", "ces", "être", "avoir", "sans", "sous", "alors", "donc", "aussi", "très", "bien", "peux", "peut", "faire"],
+    de: ["der", "die", "das", "und", "ein", "eine", "von", "den", "sich", "des", "auf", "für", "dem", "nicht", "als", "auch", "aus", "hat", "dass", "sie", "nach", "wird", "bei", "einer", "sind", "noch", "wie", "einem", "über", "einen", "nur", "oder", "aber", "vor", "mehr", "durch", "sein", "war", "schon", "jetzt", "heute", "wenn", "dann", "doch", "sehr", "kann", "alle", "viele"],
+    it: ["gli", "che", "sono", "ho", "hai", "abbiamo", "avete", "hanno", "lui", "lei", "noi", "voi", "loro", "questo", "questa", "questi", "queste", "quello", "quella", "quelli", "quelle", "come", "perché", "quando", "dove", "cosa", "anche", "molto", "tanto", "poco", "tutto", "tutti", "niente", "nessuno", "ogni", "alcuni", "essere", "avere", "fare", "dire", "andare", "vedere", "sapere", "volere", "potere", "solo", "ancora", "sempre", "oggi", "ieri", "prima", "dopo"],
+    pt: ["não", "por", "são", "como", "ele", "ela", "seu", "sua", "seus", "suas", "este", "esta", "estes", "estas", "esse", "essa", "isso", "isto", "aquele", "aquela", "muito", "mais", "também", "ainda", "sempre", "nunca", "agora", "hoje", "ontem", "amanhã", "aqui", "quando", "onde", "porque", "então", "assim", "pouco", "todo", "todos", "toda", "todas", "outro", "outra", "outros", "outras", "nada", "ninguém", "cada", "algum", "alguma", "alguns", "algumas", "fazer", "dizer", "saber", "querer", "poder", "ficar"]
+  };
+  function guessTextLanguage(text) {
+    var t = String(text || "");
+    if (!t) return "latin";
+    var sample = t.slice(0, 1500);
+    var counts = { zh: 0, ja: 0, he: 0, ar: 0, hi: 0, latin: 0 };
+    var i, code;
+    for (i = 0; i < sample.length; i++) {
+      code = sample.charCodeAt(i);
+      if (code >= 0x4E00 && code <= 0x9FFF) counts.zh++;
+      else if (code >= 0x3040 && code <= 0x30FF) counts.ja++;
+      else if (code >= 0x0590 && code <= 0x05FF) counts.he++;
+      else if (code >= 0x0600 && code <= 0x06FF) counts.ar++;
+      else if (code >= 0x0900 && code <= 0x097F) counts.hi++;
+      else if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 0x00C0 && code <= 0x024F) || (code >= 0x1E00 && code <= 0x1EFF)) counts.latin++;
+    }
+    var letters = counts.zh + counts.ja + counts.he + counts.ar + counts.hi + counts.latin;
+    if (letters > 0) {
+      var best = null, bestN = 0;
+      ["zh", "ja", "he", "ar", "hi"].forEach(function (k) { if (counts[k] > bestN) { bestN = counts[k]; best = k; } });
+      if (best && bestN / letters > 0.25) return best;
+    }
+    var words = sample.toLowerCase().split(/[^a-zà-öø-ÿā-ž]+/i).filter(Boolean);
+    var seen = {};
+    words.forEach(function (w) { seen[w] = true; });
+    var bestLang = null, bestScore = 0;
+    Object.keys(TEXT_STOPWORDS).forEach(function (lang) {
+      var score = 0;
+      TEXT_STOPWORDS[lang].forEach(function (w) { if (seen[w]) score++; });
+      if (score > bestScore) { bestScore = score; bestLang = lang; }
+    });
+    if (bestLang && bestScore >= 3) return bestLang;
+    return "latin";
+  }
+  // v1.4.6: refuse to play garbage instead of playing it. A
+  // non-English Kokoro voice reading English text applies that
+  // language's phonetics to English letters — it comes out as
+  // random foreign-sounding noise, which is exactly what Carl
+  // reported on Nov 16. Same the other way: an English voice
+  // cannot read CJK/Hebrew/Arabic/Hindi writing at all. Latin
+  // text in an unknown Latin language is allowed (it sounds
+  // accented, not garbled), and same-language pairs are allowed.
+  // Returns a plain-language reason, or null when the pair is fine.
+  function voiceTextMismatch(voiceLang, text) {
+    var tl = guessTextLanguage(text);
+    var vl = voiceLang || "en";
+    if (vl === "en") {
+      if (tl === "zh" || tl === "ja" || tl === "he" || tl === "ar" || tl === "hi") {
+        return "This article is in " + languageEntry(tl).label + ", but the voice is English — an English voice can't read that writing. Switch the voice language to " + languageEntry(tl).label + " in the Voices section.";
+      }
+      return null;
+    }
+    if (tl === "en") {
+      return "This voice speaks " + languageEntry(vl).label + ", but this article is in English — it would come out as garbled sounds. Switch the voice language to English in the Voices section, or pick an English voice.";
+    }
+    if (tl !== "latin" && tl !== vl) {
+      return "This voice speaks " + languageEntry(vl).label + ", but this article is in " + languageEntry(tl).label + " — it would come out as garbled sounds. Pick a voice in " + languageEntry(tl).label + ", or switch the voice language.";
+    }
+    return null;
   }
   function edgeVoiceByName(n) {
     var found = null;
@@ -1563,13 +1663,51 @@
   function currentVoiceChoice() {
     var saved = storeGet(LS.voice, {}) || {};
     if (isEdgeBrowser() && !state.edgeDown) {
-      return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, kokoroVoice: "", browserName: "" };
+      return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, kokoroVoice: "", browserName: "", lang: currentLanguage() };
     }
-    var list = KOKORO_VOICES[currentLanguage()] || [];
+    var lang = currentLanguage();
+    var list = KOKORO_VOICES[lang] || [];
     var kv = saved.kokoroVoice || DEFAULT_KOKORO_VOICE;
     var ok = false;
     list.forEach(function (v) { if (v.name === kv) ok = true; });
-    return { engine: "kokoro", edgeVoice: "", kokoroVoice: ok ? kv : (list.length ? list[0].name : ""), browserName: "" };
+    if (!ok) {
+      // The saved voice is not in this language's list (a stale pair
+      // that survived a load, or a voice saved before the language
+      // was changed). The LANGUAGE wins: use its first voice, never
+      // silently swap in a voice from another language. (An earlier
+      // v1.4.6 draft did the opposite — "the voice wins" — and a
+      // deliberate Spanish pick then silently played the English
+      // voice, which is exactly the bug Carl reported. Stale pairs
+      // are already reset to English at load by
+      // resetNonEnglishSavedChoice; this is only a safety net.)
+      kv = list.length ? list[0].name : "";
+      ok = true;
+    }
+    return { engine: "kokoro", edgeVoice: "", kokoroVoice: ok ? kv : (list.length ? list[0].name : ""), browserName: "", lang: lang };
+  }
+  // v1.4.6: the site is English-first, ALWAYS. A stale saved
+  // non-English language or voice from an earlier visit is reset
+  // to English on load — the saved choice is not trusted, because
+  // a persisted Spanish/Japanese choice makes every English
+  // article come out as foreign-accented gibberish (Nov 16: that
+  // is exactly what Carl reported). A deliberate pick inside THIS
+  // visit still sticks; only a choice carried over from an earlier
+  // visit is reset, and the voice menu says so in plain text.
+  // Returns a plain-language note when it changed something.
+  function resetNonEnglishSavedChoice() {
+    var saved = storeGet(LS.voice, {}) || {};
+    var changed = false;
+    if (saved.lang && saved.lang !== "en") { saved.lang = "en"; changed = true; }
+    if (saved.kokoroVoice) {
+      var vlang = kokoroLangOf(saved.kokoroVoice);
+      if (!vlang || vlang !== "en") { saved.kokoroVoice = DEFAULT_KOKORO_VOICE; changed = true; }
+    }
+    if (saved.edgeVoice) {
+      var elang = voiceLangOf(saved.edgeVoice);
+      if (!elang || elang !== "en") { saved.edgeVoice = DEFAULT_EDGE_VOICE; changed = true; }
+    }
+    if (changed) storeSet(LS.voice, saved);
+    return changed ? "Reset to English — your saved voice language wasn't English. Tap another language in the Voices section if you want it." : null;
   }
   // The voice picker: language-first, curated cards only.
   // No browser/device voice is ever listed or used, and there is no
@@ -1582,7 +1720,7 @@
     var free = freeVoiceList();
     sel.innerHTML = "";
     var g1 = document.createElement("optgroup");
-    g1.label = free.engine === "edge" ? "Microsoft AI voices — free, no key" : "Kokoro AI voices — free, on your device";
+    g1.label = (free.engine === "edge" ? "Microsoft AI voices — free, no key" : "Kokoro AI voices — free, on your device") + " · " + languageEntry(currentLanguage()).label;
     if (!free.voices.length) {
       var none = el("option", null, "No free on-device voice for this language yet — add a free key below");
       none.disabled = true;
@@ -1623,7 +1761,10 @@
     card.appendChild(top);
     card.appendChild(el("div", "voice-desc", entry.desc));
     var tags = el("div", "voice-card-tags");
-    [entry.accent, entry.gender, entry.use, "Free"].forEach(function (t) {
+    // v1.4.6: the language, plainly, first — a card must never be
+    // tapped without the visitor knowing what language they are
+    // about to hear.
+    [languageEntry(currentLanguage()).label, entry.accent, entry.gender, entry.use, "Free"].forEach(function (t) {
       tags.appendChild(el("span", "voice-tag", t));
     });
     card.appendChild(tags);
@@ -1715,19 +1856,32 @@
   function setVoiceLanguage(code) {
     var cur = storeGet(LS.voice, {}) || {};
     cur.lang = code;
-    var free = freeVoiceList();
-    if (free.engine === "edge") {
+    // v1.4.6: the candidate list must come from the NEW language.
+    // freeVoiceList() reads the SAVED language, which is still the
+    // old one here — the old code therefore kept the old voice, so
+    // picking Spanish left the English voice selected with no card
+    // marked as selected (reproduced Nov 16 in jsdom: after picking
+    // Spanish, the voice was still af_heart).
+    var list;
+    if (isEdgeBrowser() && !state.edgeDown) list = languageEntry(code).voices;
+    else list = KOKORO_VOICES[code] || [];
+    if (isEdgeBrowser() && !state.edgeDown) {
       var ok = false;
-      free.voices.forEach(function (v) { if (v.name === cur.edgeVoice) ok = true; });
-      if (!ok) cur.edgeVoice = free.voices.length ? free.voices[0].name : DEFAULT_EDGE_VOICE;
+      list.forEach(function (v) { if (v.name === cur.edgeVoice) ok = true; });
+      if (!ok) cur.edgeVoice = list.length ? list[0].name : DEFAULT_EDGE_VOICE;
     } else {
       var okK = false;
-      free.voices.forEach(function (v) { if (v.name === cur.kokoroVoice) okK = true; });
-      if (!okK) cur.kokoroVoice = free.voices.length ? free.voices[0].name : DEFAULT_KOKORO_VOICE;
+      list.forEach(function (v) { if (v.name === cur.kokoroVoice) okK = true; });
+      if (!okK) cur.kokoroVoice = list.length ? list[0].name : DEFAULT_KOKORO_VOICE;
     }
     storeSet(LS.voice, cur);
     state.freeTransport = null;
     state.edgeFailed = false; state.kokoroFailed = false;
+    // v1.4.6: say the change out loud. Before this the language
+    // switched silently, and a visitor who tapped the dropdown while
+    // exploring could end up with every article read in Japanese
+    // without knowing what changed.
+    toast("Voice language set to " + languageEntry(code).label + " — previews and reading will be in " + languageEntry(code).label + ". Switch back to English any time.");
     loadVoices();
   }
   function selectVoice(engine, voiceId) {
@@ -1946,7 +2100,7 @@
     var box = kokoroLoadBox();
     if (box) box.hidden = true;
   }
-  function kokoroFail(reason, rawErr) {
+  function kokoroFail(reason, rawErr, quiet) {
     kokoro.failed = true;
     kokoro.failReason = reason;
     kokoro.failDetail = rawErrorDetail(rawErr);
@@ -1957,6 +2111,22 @@
     // open can now read exactly what onnxruntime said.
     try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro load failed:", rawErr); } catch (e) {}
     hideKokoroLoading();
+    // v1.4.6: a quiet (background warm-up) failure does not show
+    // the empty state — a visitor who only came to read should not
+    // meet an error banner. The honest error still shows the moment
+    // they tap Play or Preview (which retries).
+    if (!quiet) updateVoiceEmptyState();
+  }
+  // v1.4.6: a failed load used to be sticky for the whole page
+  // session, so "Tap Play to retry" (the error message's own
+  // advice) instantly failed again with the same stored error.
+  // Clear it on a deliberate new tap so a retry really retries —
+  // on the fallback device/graph the failure already recorded.
+  function resetKokoroFailure() {
+    kokoro.failed = false;
+    kokoro.failReason = null;
+    kokoro.failDetail = null;
+    state.kokoroFailed = false;
     updateVoiceEmptyState();
   }
   // Force single-thread WASM before a WASM load. What the library
@@ -1994,10 +2164,13 @@
     });
   }
   // Load the Kokoro model (once per page). `onProgress` gets
-  // { label, pct } for the loading UI. Test seam: if the harness sets
+  // { label, pct } for the loading UI. `opts.quiet` (v1.4.6) marks a
+  // background warm-up load: a failure is recorded but shows no
+  // empty state until the visitor actually tries to play.
+  // Test seam: if the harness sets
   // window.__AURALIS_KOKORO_MOCK, it is used instead of the CDN —
   // that is how QA exercises this path without a 90MB download.
-  function ensureKokoro(onProgress) {
+  function ensureKokoro(onProgress, opts) {
     if (kokoro.tts) return Promise.resolve(kokoro.tts);
     if (kokoro.loading) return kokoro.loading;
     if (kokoro.failed) return Promise.reject(new Error(kokoro.failReason || "Kokoro voices could not be loaded."));
@@ -2006,9 +2179,9 @@
       return Promise.resolve(kokoro.tts);
     }
     var firstTime = !storeGet("auralis.kokoro.seen", false);
-    showKokoroLoading(firstTime
+    showKokoroLoading((opts && opts.loadingLabel) || (firstTime
       ? "First play downloads the voice model once (~90MB) — then it works offline, even on a plane. Best on Wi-Fi…"
-      : "Loading the on-device voices…", 0);
+      : "Loading the on-device voices…"), 0);
     // THE BYPASS, v1.4.3 (verified against transformers.js 3.5.1
     // source): the first attempt's device is chosen AFTER a
     // probeGpuAdapter() call (below) — "advertises a GPU" is not
@@ -2063,6 +2236,12 @@
             // percentage there while a play is waiting on the model.
             if (state.playing && state.engine === "free" && !kokoro.tts) {
               setPlayButtonLabel(pct !== null ? "⏳ Loading voices… " + pct + "%" : "⏳ Loading voices…");
+            }
+            // v1.4.6: same mirror for a Preview tap waiting on the
+            // model — the button must keep showing the download %,
+            // not sit on a bare "Loading…" for a minute.
+            if (state.activePreviewBtn) {
+              try { state.activePreviewBtn.textContent = "⏳ Loading…" + (pct !== null ? " " + pct + "%" : ""); } catch (e) {}
             }
           }
         };
@@ -2132,10 +2311,81 @@
       return tts;
     }).catch(function (err) {
       kokoro.loading = null;
-      kokoroFail(plainKokoroError(err), err);
+      kokoroFail(plainKokoroError(err), err, opts && opts.quiet);
       throw new Error(kokoro.failReason);
     });
     return kokoro.loading;
+  }
+  // v1.4.6: warm up the voice in the background, on page load —
+  // NOT on first Play. The model used to download on first Play,
+  // so the first tap sat silent for ~25s+ while ~90MB downloaded
+  // and the first sentence synthesized, which reads as "didn't
+  // load at all". Warming up moves that wait to before the tap.
+  // The model files are cached by the library (transformers.js
+  // Cache Storage) and the voice files by kokoro-js (its own
+  // "kokoro-voices" cache bucket), so the second visit reuses
+  // them and the warm-up is near-instant.
+  var warmupStarted = false;
+  function warmUpVoices() {
+    if (warmupStarted || kokoro.tts || kokoro.loading) return;
+    warmupStarted = true;
+    state.warmingUp = true;
+    showKokoroLoading("Getting the voice ready…", 0);
+    primeEnglishVoiceFiles();
+    ensureKokoro(function (p) {
+      // Mirror warm-up progress into the Play button too, so the
+      // work is visible where the visitor is looking.
+      if (!state.playing && p && typeof p.pct === "number") {
+        setPlayButtonLabel("⏳ Getting the voice ready… " + p.pct + "%");
+      }
+    }, { quiet: true, loadingLabel: "Getting the voice ready…" }).then(function () {
+      state.warmingUp = false;
+      hideKokoroLoading();
+      if (!state.playing) setPlayButton(false); // restore "▶ Play"
+    }).catch(function () {
+      // Quiet failure: the honest error shows when the visitor
+      // actually taps Play or Preview (which retries). A visitor
+      // who only came to read should not meet an error banner.
+      state.warmingUp = false;
+      hideKokoroLoading();
+      if (!state.playing) setPlayButton(false);
+    });
+  }
+  // Start the warm-up shortly after load, so the page renders
+  // first. Skipped where the free engine needs no model (real
+  // Edge: Microsoft voices). On a metered or very slow connection
+  // the warm-up waits for the first tap/keypress instead of
+  // spending the visitor's data unasked.
+  function maybeWarmUpVoices() {
+    if (typeof window !== "undefined" && window.__AURALIS_DISABLE_WARMUP) return; // QA seam: regression pages run exactly like v1.4.5
+    if (isEdgeBrowser() && !state.edgeDown) return;
+    var conn = (typeof navigator !== "undefined" && navigator.connection) || null;
+    if (conn && (conn.saveData || conn.effectiveType === "slow-2g" || conn.effectiveType === "2g")) {
+      var arm = function () {
+        warmUpVoices();
+        window.removeEventListener("pointerdown", arm);
+        window.removeEventListener("keydown", arm);
+      };
+      window.addEventListener("pointerdown", arm);
+      window.addEventListener("keydown", arm);
+      return;
+    }
+    setTimeout(warmUpVoices, 1200);
+  }
+  // v1.4.6: prime the browser's HTTP cache with the English voice
+  // files (~510KB each, 8 voices) so a later voice switch or first
+  // synthesis doesn't fetch them mid-playback. English ONLY — never
+  // non-English voices. Best effort and silent: a failure here
+  // changes nothing, the file is simply fetched when first needed.
+  // (kokoro-js also keeps its own "kokoro-voices" Cache Storage
+  // bucket after first use, so repeat visits are fast regardless.)
+  function primeEnglishVoiceFiles() {
+    if (typeof fetch !== "function") return;
+    KOKORO_VOICES.en.forEach(function (v) {
+      try {
+        fetch("https://huggingface.co/" + KOKORO_MODEL + "/resolve/main/voices/" + v.name + ".bin", { cache: "force-cache" }).catch(function () {});
+      } catch (e) {}
+    });
   }
   // kokoro-js generate() returns a RawAudio-like object; the exact
   // shape varies by version/environment ({ audio } vs { data } vs the
@@ -2218,6 +2468,31 @@
       return a;
     });
   }
+  // v1.4.6: synthesize the first sentence in the background as soon
+  // as an article loads, so tapping Play starts audio immediately
+  // from a ready buffer instead of waiting on a first synthesis.
+  // Only the first sentence (cheap), only the free engine, and never
+  // when the voice/language guard would refuse the article anyway.
+  function prefetchFirstSentence() {
+    if (!state.sentences.length) return;
+    if (premiumActive()) return;
+    if (currentVoiceChoice().engine !== "kokoro") return;
+    var s = state.sentences[0];
+    var key = (state.title || "") + "\n" + s.text;
+    if (state.prefetchKey === key && state.prefetchAudio) return;
+    state.prefetchKey = key;
+    state.prefetchAudio = null;
+    // v1.4.6: some languages have NO free on-device voice (German,
+    // Hebrew, Arabic) — nothing to prefetch; Play refuses plainly
+    // with the way out when the visitor taps it.
+    if (!(KOKORO_VOICES[currentLanguage()] || []).length) return;
+    var mismatch = voiceTextMismatch((currentVoiceChoice().lang || currentLanguage()), articleSampleText());
+    if (mismatch) return;
+    freeFetchAudio(s.text).then(function (audio) {
+      if (state.prefetchKey !== key) return; // a newer article loaded meanwhile
+      state.prefetchAudio = audio;
+    }).catch(function () { /* Play loads it on demand and shows the real error */ });
+  }
   function freeFetchAudio(text) {
     var choice = currentVoiceChoice();
     if (choice.engine === "edge") {
@@ -2291,9 +2566,47 @@
     updateProgress();
     toast("Playback failed — " + reason + " Tap Play to retry.");
   }
+  // First few sentences of the open article, for the language check.
+  function articleSampleText() {
+    if (!state.sentences.length) return "";
+    return state.sentences.slice(0, 4).map(function (s) { return s.text; }).join(" ");
+  }
   var firstPlayToastShown = false;
   function playFree(fromIdx) {
     if (!state.sentences.length) { toast("Open an article first."); return; }
+    // v1.4.6: a previous failed load must not make "tap Play to
+    // retry" a lie — a deliberate new tap clears the failure and
+    // really retries (on the fallback device the failure recorded).
+    if (kokoro.failed) resetKokoroFailure();
+    // v1.4.6: some languages have NO free on-device voice (German,
+    // Hebrew, Arabic). Without this guard the play fell through to
+    // currentKokoroVoice()'s English default and read the article
+    // in English while the menu said German — a silent wrong voice.
+    // Refuse plainly instead, with the way out.
+    if (currentVoiceChoice().engine === "kokoro" && !(KOKORO_VOICES[currentLanguage()] || []).length) {
+      state.playing = false; state.paused = false;
+      setPlayButton(false);
+      var noVoiceMsg = "No free on-device voice for " + languageEntry(currentLanguage()).label + " yet — add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.";
+      showPlaybackError(noVoiceMsg, null);
+      toast(noVoiceMsg);
+      return;
+    }
+    // v1.4.6: never read an article in the wrong language. A
+    // non-English voice reading English text comes out as garbled
+    // foreign-sounding noise — warn and refuse instead of playing
+    // garbage, and say how to fix it (switch the voice language
+    // back to English). The free engine only; premium voices are
+    // the visitor's own configured voice, whose language Auralis
+    // cannot know.
+    var mismatch = voiceTextMismatch((currentVoiceChoice().lang || currentLanguage()), articleSampleText());
+    if (mismatch) {
+      state.playing = false; state.paused = false;
+      setPlayButton(false);
+      showPlaybackError("Wrong voice language — " + mismatch + " Tap Play to retry after switching.", null);
+      toast("Wrong voice language — " + mismatch);
+      return;
+    }
+    state.waitingFirstAudio = true;
     state.playing = true; state.paused = false; state.engine = "free"; state.finished = false;
     var errBox = $("playbackError"); if (errBox) errBox.hidden = true;
     setPlayButton(true);
@@ -2314,30 +2627,53 @@
       // Play button says so right where the visitor is looking —
       // v1.4.0 showed "Pause" + a frozen 7% for 30s with no sign
       // anything was happening. Restored to Pause when audio arrives.
-      if (currentVoiceChoice().engine === "kokoro" && !kokoro.tts && !kokoro.failed) {
-        setPlayButtonLabel("⏳ Loading voices…");
-        // Say the wait out loud once (v1.4.4): on a phone the load
-        // box lives in the Voices section, below the fold — the
-        // visitor looking at the player would otherwise see only a
-        // loading label and no reason for it.
-        if (!firstPlayToastShown && !storeGet("auralis.kokoro.seen", false)) {
-          firstPlayToastShown = true;
-          toast("First play downloads the voice model once (~90MB) — then it works offline. This can take a minute on a slow connection…");
+      if (currentVoiceChoice().engine === "kokoro" && !kokoro.failed) {
+        if (!kokoro.tts) {
+          setPlayButtonLabel("⏳ Loading voices…");
+          // Say the wait out loud once (v1.4.4): on a phone the load
+          // box lives in the Voices section, below the fold — the
+          // visitor looking at the player would otherwise see only a
+          // loading label and no reason for it.
+          if (!firstPlayToastShown && !storeGet("auralis.kokoro.seen", false)) {
+            firstPlayToastShown = true;
+            toast("First play downloads the voice model once (~90MB) — then it works offline. This can take a minute on a slow connection…");
+          }
+        } else {
+          // v1.4.6: the model is here but the first sentence still
+          // has to be synthesized — seconds of on-device inference
+          // on a phone, with no sound until it lands. Say so, or
+          // the silence reads as "didn't load at all" (Nov 16
+          // check: ~25s of silence before the first sound).
+          setPlayButtonLabel("⏳ Making the first sounds…");
         }
-        startLoadWatchdog();
+        // v1.4.6: the watchdog only runs while the FIRST audio is
+        // awaited — never between sentences mid-article.
+        if (state.waitingFirstAudio) startLoadWatchdog();
       }
-      freeFetchAudio(s.text).then(function (audio) {
+      // v1.4.6: the first sentence may already be synthesized from
+      // the article-load prefetch — play it straight away instead
+      // of synthesizing it again.
+      var prefetched = null;
+      if (idx === 0 && state.prefetchAudio && state.prefetchKey === (state.title || "") + "\n" + s.text) {
+        prefetched = state.prefetchAudio;
+      }
+      state.prefetchAudio = null; state.prefetchKey = null;
+      (prefetched ? Promise.resolve(prefetched) : freeFetchAudio(s.text)).then(function (audio) {
         if (!state.playing || state.engine !== "free") return;
         stopLoadWatchdog();
-        setPlayButton(true);
         state.freeAudio = audio;
         freeWordTimer(s, audio._durMs);
         audio.onended = function () { idx++; next(); };
         audio.onerror = function () { failPlayback("The audio for this sentence failed to play."); };
         if (state.paused) return; // resume will play it
+        // v1.4.6: only now — the button must never flip back to
+        // "Pause" while paused (a sentence fetched after a pause
+        // tap used to do exactly that).
+        setPlayButton(true);
         audio.play().then(function () {
           // Audio actually started: only now does this sentence
           // count toward the progress bar.
+          state.waitingFirstAudio = false;
           state.progressSentence = idx;
           updateProgress();
         }).catch(function () {
@@ -2345,6 +2681,7 @@
           // user gesture has expired while the model downloaded —
           // the voice IS downloaded now, so a second tap starts
           // right away. Say that plainly (v1.4.4).
+          state.waitingFirstAudio = false;
           failPlayback("The browser blocked the sound because the voice took a while to download — tap Play again and it will start right away (the voice is downloaded now).");
         });
       }).catch(function (err) {
@@ -2352,6 +2689,7 @@
         // to a robotic voice — say so honestly instead, with the
         // real error as a details line (v1.4.2).
         try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Play failed:", err); } catch (e) {}
+        state.waitingFirstAudio = false;
         state.playing = false; state.paused = false;
         stopLoadWatchdog();
         setPlayButton(false);
@@ -2374,13 +2712,19 @@
   }
   function previewEdgeVoice(ev, btn) {
     setPreviewBusy(btn, true);
+    state.activePreviewBtn = btn;
+    startPreviewWatchdog(btn);
     var sample = languageEntry(currentLanguage()).sample;
     edgeSynthesize(sample, ev.name, localeOf(ev.name)).then(function (blob) {
+      stopPreviewWatchdog();
+      state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function () {
+      stopPreviewWatchdog();
+      state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
       // Same loud handling as playback: say Microsoft is down, switch
       // the free engine to Kokoro, and do NOT play any other voice
@@ -2389,17 +2733,36 @@
     });
   }
   function previewKokoroVoice(ev, btn) {
+    // v1.4.6: no free on-device voice for this language (German,
+    // Hebrew, Arabic) — refuse plainly instead of previewing the
+    // English default under a foreign-language label.
+    if (!(KOKORO_VOICES[currentLanguage()] || []).length) {
+      toast("No free on-device voice for " + languageEntry(currentLanguage()).label + " yet — add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.");
+      return;
+    }
     setPreviewBusy(btn, true);
+    state.activePreviewBtn = btn;
+    startPreviewWatchdog(btn);
+    if (kokoro.failed) resetKokoroFailure();
     var sample = languageEntry(currentLanguage()).sample;
     if (!kokoro.tts && !kokoro.failed) {
       toast("Loading the on-device voices for the first time (~90MB, once) — this can take a minute on a slow connection…");
+    } else if (kokoro.tts) {
+      // v1.4.6: the model is already here, but the first preview
+      // still needs on-device synthesis — seconds of silence on a
+      // phone. Say so up front instead of leaving a silent button.
+      toast("Making the preview sounds — the first one takes a few seconds on a phone…");
     }
     kokoroSynthesize(sample, ev.name).then(function (res) {
+      stopPreviewWatchdog();
+      state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(res.blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function (err) {
+      stopPreviewWatchdog();
+      state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
       try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro preview failed:", err); } catch (e) {}
       toast("Couldn't load the on-device voices (" + plainKokoroError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
@@ -2414,6 +2777,7 @@
     var label = playing ? "⏸ Pause" : "▶ Play";
     var b = $("playPauseBtn"); if (b) b.textContent = label;
     var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = label;
+    syncBottomBar(); // keeps the "Reading with …" line true while playing
   }
   function setPlayButtonLabel(text) {
     var b = $("playPauseBtn"); if (b) b.textContent = text;
@@ -2433,23 +2797,54 @@
     if (loadWatchTimer) return;
     loadWatchStartedAt = Date.now();
     loadWatchTimer = setInterval(function () {
-      if (!state.playing || state.paused || kokoro.tts || kokoro.failed) { stopLoadWatchdog(); return; }
+      // v1.4.6: alive until the first audio exists — the wait covers
+      // the model download AND the first synthesis, and a tap during
+      // either must see the wait moving, never a dead button.
+      if (!state.playing || state.paused || state.freeAudio || kokoro.failed) { stopLoadWatchdog(); return; }
       var secs = Math.round((Date.now() - loadWatchStartedAt) / 1000);
       var pct = "";
       try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
-      setPlayButtonLabel("⏳ Loading voices…" + pct + " · " + secs + "s");
+      setPlayButtonLabel(kokoro.tts ? "⏳ Making the first sounds… · " + secs + "s" : "⏳ Loading voices…" + pct + " · " + secs + "s");
     }, 5000);
   }
   function stopLoadWatchdog() { if (loadWatchTimer) { clearInterval(loadWatchTimer); loadWatchTimer = null; } }
+  // v1.4.6: a Preview tap must keep showing it is alive, not just
+  // say "Loading…" once. The first preview can sit silent for ~25s
+  // (model download, then on-device synthesis) — on a phone longer.
+  // Ticks every 5s with elapsed time (and the download % when one
+  // was reported) until the preview plays or fails.
+  var previewWatchTimer = null;
+  var previewWatchStartedAt = 0;
+  function startPreviewWatchdog(btn) {
+    stopPreviewWatchdog();
+    previewWatchStartedAt = Date.now();
+    previewWatchTimer = setInterval(function () {
+      if (!btn || btn.disabled === false) { stopPreviewWatchdog(); return; }
+      var secs = Math.round((Date.now() - previewWatchStartedAt) / 1000);
+      var pct = "";
+      try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+      btn.textContent = kokoro.tts ? "⏳ Making the sounds… · " + secs + "s" : "⏳ Loading…" + pct + " · " + secs + "s";
+    }, 5000);
+  }
+  function stopPreviewWatchdog() { if (previewWatchTimer) { clearInterval(previewWatchTimer); previewWatchTimer = null; } }
   function syncBottomBar() {
     var nameEl = $("bottomVoiceName");
-    if (!nameEl) return;
-    if (premiumActive()) { nameEl.textContent = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)"; return; }
-    if (state.edgeDown) { nameEl.textContent = "Voice: Kokoro (on-device) — Microsoft voices unavailable in this browser"; return; }
-    var choice = currentVoiceChoice();
-    if (choice.engine === "edge") nameEl.textContent = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · Microsoft AI (free)";
-    else if (choice.kokoroVoice) nameEl.textContent = "Voice: " + kokoroVoiceByName(choice.kokoroVoice).label + " · on your device (free)";
-    else nameEl.textContent = "Voice: — no free voice for this language yet";
+    var nowEl = $("nowPlayingVoice");
+    var voiceText = "Voice: — no free voice for this language yet";
+    if (premiumActive()) {
+      voiceText = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)";
+    } else if (state.edgeDown) {
+      voiceText = "Voice: Kokoro (on-device) — Microsoft voices unavailable in this browser";
+    } else {
+      var choice = currentVoiceChoice();
+      if (choice.engine === "edge") voiceText = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · " + languageEntry(choice.lang || currentLanguage()).label + " · Microsoft AI (free)";
+      else if (choice.kokoroVoice) voiceText = "Voice: " + kokoroVoiceByName(choice.kokoroVoice).label + " · " + languageEntry(choice.lang || currentLanguage()).label + " · on your device (free)";
+    }
+    if (nameEl) nameEl.textContent = voiceText;
+    // v1.4.6: the main player shows the voice + language too, so
+    // while an article is playing the visitor can always see WHAT
+    // is reading it — a foreign voice never plays anonymously.
+    if (nowEl) nowEl.textContent = (state.playing && !state.paused) ? voiceText.replace(/^Voice: /, "Reading with ") : voiceText;
     updateDownloadLabel();
   }
 
@@ -2772,8 +3167,28 @@
     renderNext();
   }
 
+  // Plain-language status of a first-play wait: download % and
+  // elapsed seconds, so a tap during the wait can say something true.
+  function loadWaitStatus() {
+    var secs = loadWatchStartedAt ? Math.round((Date.now() - loadWatchStartedAt) / 1000) : 0;
+    var pct = "";
+    try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+    if (kokoro.tts) return "Still making the first sounds — " + secs + "s in. Tap Stop to cancel.";
+    return "Still downloading the voice model once (~90MB)" + (pct ? " — " + pct : "") + (secs ? " · " + secs + "s" : "") + ". Tap Stop to cancel.";
+  }
   function togglePlayPause() {
     if (!state.sentences.length) { toast("Paste a link, some text, or open a sample first."); return; }
+    // v1.4.6: while the first sounds are still being prepared
+    // (voice model downloading, or first sentence synthesizing),
+    // Play is NOT a pause toggle. A second tap used to pause the
+    // load: the button flipped back to "▶ Play", the download kept
+    // running invisibly, and nothing ever played — "it didn't load
+    // at all". Now a tap during the wait just says how far along
+    // it is. Stop is the way to cancel a load.
+    if (state.playing && !state.paused && state.engine === "free" && state.waitingFirstAudio) {
+      toast(loadWaitStatus());
+      return;
+    }
     if (state.playing && !state.paused) {
       if (state.engine === "premium" && state.premiumAudio) { state.premiumAudio.pause(); state.paused = true; setPlayButton(false); }
       else if (state.engine === "free") { if (state.freeAudio) state.freeAudio.pause(); state.paused = true; setPlayButton(false); }
@@ -3227,30 +3642,125 @@
 
   /* ---------------- PWA install + service worker ---------------- */
   var deferredInstallPrompt = null;
+  // v1.4.6: is this page running inside another app's browser
+  // (a feed, a chat, a social app)? Those WebViews never fire
+  // beforeinstallprompt and have no menu to install from, so the
+  // install button must say so instead of silently doing nothing.
+  function isInAppWebView() {
+    var ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    if (/;\s*wv\)/.test(ua)) return true; // Android WebView
+    if (/FBAN|FBAV|Instagram|Line\/|KAKAOTALK|Snapchat|TikTok|Musical_ly|Pinterest/.test(ua)) return true;
+    if (/iPhone|iPad|iPod/.test(ua) && !/Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)) return true; // iOS in-app browser
+    return false;
+  }
+  function isInstalledApp() {
+    try {
+      if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return true;
+      if (typeof navigator !== "undefined" && navigator.standalone) return true;
+    } catch (e) {}
+    return false;
+  }
+  // The install button must always say something true about the
+  // browser it is in — never sit there silently doing nothing.
+  // Called on load and again a few seconds later (Chrome fires
+  // beforeinstallprompt shortly after load), and on both install events.
+  function updateInstallUI() {
+    var btn = $("installAppBtn"), hint = $("installAppHint");
+    var copyBtn = $("copyAppLinkBtn"), wv = $("webviewNote");
+    if (!btn) return;
+    if (isInstalledApp()) {
+      btn.disabled = true;
+      btn.textContent = "✓ Already installed";
+      if (hint) hint.textContent = "Installed — look for the gold A on your home screen or apps list.";
+      if (copyBtn) copyBtn.hidden = true;
+      if (wv) wv.hidden = true;
+      return;
+    }
+    btn.disabled = false;
+    if (deferredInstallPrompt) {
+      btn.textContent = "⬇ Install as an app";
+      if (hint) hint.textContent = "Your browser is ready — tap the button above to install Auralis.";
+      if (copyBtn) copyBtn.hidden = true;
+      if (wv) wv.hidden = true;
+      return;
+    }
+    // No install prompt: the button becomes the manual path, and the
+    // page says so in plain text — in an in-app browser it also says
+    // that browser can't install, with a copy-link button instead.
+    btn.textContent = "Install — use your browser's menu";
+    if (hint) hint.textContent = "No install prompt right now — open your browser's ⋮ menu and tap “Install app” or “Add to Home screen.” On iPhone Safari: Share → Add to Home Screen.";
+    if (copyBtn) copyBtn.hidden = false;
+    if (wv) wv.hidden = !isInAppWebView();
+  }
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function copyAppLink() {
+    var url = (typeof location !== "undefined" && location.href) || "https://moretoexplore1234.github.io/auralis-reader/";
+    function done() { toast("Link copied — paste it into Chrome to open Auralis."); }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done, function () { fallbackCopy(url); done(); });
+        return;
+      }
+    } catch (e) {}
+    fallbackCopy(url); done();
+  }
+  // The big "Download Auralis" button must actually download
+  // something (v1.4.6: it used to be an anchor to #get-the-app —
+  // it only scrolled). It points at this version's ZIP on GitHub;
+  // when the browser offers a real install prompt, the tap installs
+  // instead.
+  function setDownloadLinks() {
+    var zip = "https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/" + APP_VERSION + ".zip";
+    var d = $("downloadBtn"); if (d) d.href = zip;
+    var z = $("zipDownloadBtn"); if (z) z.href = zip;
+  }
   function wireInstall() {
+    setDownloadLinks();
+    var dl = $("downloadBtn");
+    if (dl) dl.addEventListener("click", function (ev) {
+      if (deferredInstallPrompt) {
+        ev.preventDefault();
+        deferredInstallPrompt.prompt();
+        deferredInstallPrompt.userChoice.then(function () { deferredInstallPrompt = null; updateInstallUI(); });
+      }
+      // Otherwise the link proceeds to the ZIP download.
+    });
     window.addEventListener("beforeinstallprompt", function (ev) {
       ev.preventDefault();
       deferredInstallPrompt = ev;
-      var hint = $("installAppHint");
-      if (hint) hint.textContent = "Your browser is ready — tap the button above to install Auralis.";
+      updateInstallUI();
     });
     window.addEventListener("appinstalled", function () {
       deferredInstallPrompt = null;
-      var hint = $("installAppHint");
-      if (hint) hint.textContent = "Installed — look for the gold A on your home screen or apps list.";
+      updateInstallUI();
       toast("Auralis installed. Enjoy listening.");
     });
     var btn = $("installAppBtn");
     if (btn) btn.addEventListener("click", function () {
       if (deferredInstallPrompt) {
         deferredInstallPrompt.prompt();
-        deferredInstallPrompt.userChoice.then(function () { deferredInstallPrompt = null; });
+        deferredInstallPrompt.userChoice.then(function () { deferredInstallPrompt = null; updateInstallUI(); });
       } else {
-        toast("To install: open the ⋮ menu and tap “Install app” or “Add to Home screen.”");
-        var hint = $("installAppHint");
-        if (hint) hint.textContent = "No install prompt right now — use your browser's ⋮ menu → “Install app” or “Add to Home screen.” On iPhone Safari: Share → Add to Home Screen.";
+        updateInstallUI();
+        toast(isInAppWebView()
+          ? "This browser can't install apps — open this page in Chrome to install it, or copy the link below."
+          : "To install: open your browser's ⋮ menu and tap “Install app” or “Add to Home screen.”");
       }
     });
+    var copyBtn = $("copyAppLinkBtn");
+    if (copyBtn) copyBtn.addEventListener("click", copyAppLink);
+    updateInstallUI();
+    // Chrome fires beforeinstallprompt shortly after load — re-check
+    // a few seconds in so the button doesn't wrongly say "no prompt".
+    setTimeout(updateInstallUI, 3000);
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", function () {
         navigator.serviceWorker.register("sw.js").catch(function () { /* offline install is a bonus, never a blocker */ });
@@ -3661,12 +4171,40 @@
     // Probe the Microsoft transport shortly after load, so a browser
     // where it can't answer says so (banner + greyed-out cards)
     // before the visitor picks a voice.
+    // v1.4.6: the site is English-first, always. A stale saved
+    // non-English language or voice from an earlier visit is reset
+    // to English BEFORE the voice UI renders — with a plain note
+    // in the voice menu, so the visitor can pick another language
+    // again if they want it.
+    var resetNote = resetNonEnglishSavedChoice();
+    if (resetNote) {
+      var rn = $("voiceResetNote");
+      if (rn) rn.hidden = false;
+    }
+    // v1.4.6: on the first run of a new version, say which voice
+    // and language the app is actually using — no silent defaults.
+    // (One toast only: the reset note takes precedence when both fire.)
+    var seenVersion = null;
+    try { seenVersion = storeGet("auralis.version.seen", null); } catch (e) {}
+    if (seenVersion !== APP_VERSION) {
+      try { storeSet("auralis.version.seen", APP_VERSION); } catch (e) {}
+      if (resetNote) toast(resetNote);
+      else {
+        var vc0 = currentVoiceChoice();
+        toast("Auralis updated to " + APP_VERSION + " — voice: " + freeVoiceLabel(vc0) + " · " + languageEntry(vc0.lang || currentLanguage()).label + ". Change it in the Voices section.");
+      }
+    } else if (resetNote) {
+      toast(resetNote);
+    }
     var langSel = $("voiceLangSelect");
     if (langSel) {
       langSel.value = currentLanguage();
       langSel.addEventListener("change", function () { setVoiceLanguage(langSel.value); });
     }
     loadVoices();
+    // v1.4.6: warm the voice up in the background (page load, not
+    // first Play) so the first tap starts sound at once.
+    maybeWarmUpVoices();
     setTimeout(probeEdgeTransport, 800);
     var retryBtn = $("edgeRetryBtn");
     if (retryBtn) retryBtn.addEventListener("click", function () {
@@ -3692,6 +4230,29 @@
 
     updateAiAvailability();
   }
+
+  // v1.4.6: QA seam (harmless in production) — the jsdom harness
+  // drives these helpers directly instead of guessing from the DOM.
+  try {
+    if (typeof window !== "undefined") {
+      window.__AURALIS_TEST = {
+        guessTextLanguage: guessTextLanguage,
+        voiceTextMismatch: voiceTextMismatch,
+        kokoroLangOf: kokoroLangOf,
+        voiceLangOf: voiceLangOf,
+        currentVoiceChoice: currentVoiceChoice,
+        currentLanguage: currentLanguage,
+        isInAppWebView: isInAppWebView,
+        resetNonEnglishSavedChoice: resetNonEnglishSavedChoice,
+        warmUpVoices: warmUpVoices,
+        maybeWarmUpVoices: maybeWarmUpVoices,
+        prefetchFirstSentence: prefetchFirstSentence,
+        kokoroState: function () { return { tts: !!kokoro.tts, loading: !!kokoro.loading, failed: !!kokoro.failed }; },
+        kokoroVoices: KOKORO_VOICES,
+        appState: state
+      };
+    }
+  } catch (e) {}
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

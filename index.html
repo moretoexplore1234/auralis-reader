@@ -60,7 +60,7 @@
       <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
-        <a class="btn btn-gold btn-download" href="#get-the-app" id="downloadBtn">⬇ Download Auralis</a>
+        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.6.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
         <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
         <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
         <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
@@ -127,6 +127,7 @@
             <button class="player-btn labelled" id="skipBackBtn" type="button" title="Skip back 15 seconds" aria-label="Skip back 15 seconds">⏪ 15s</button>
             <button class="player-btn labelled" id="skipFwdBtn" type="button" title="Skip forward 15 seconds" aria-label="Skip forward 15 seconds">15s ⏩</button>
           </div>
+          <p class="muted now-playing-voice" id="nowPlayingVoice">Voice: —</p>
           <div class="voice-controls">
             <label>Voice
               <select id="voiceSelect" aria-label="Choose a voice"><option value="">Loading voices…</option></select>
@@ -252,6 +253,8 @@
           </ol>
           <button class="btn btn-gold btn-block" type="button" id="installAppBtn">⬇ Install as an app</button>
           <p class="muted" id="installAppHint" style="margin-top:10px">If the button says the app is already installed, you're all set — look for the gold A on your home screen.</p>
+          <p class="muted" id="webviewNote" style="margin-top:10px" hidden>You're looking at Auralis inside another app's browser, which can't install apps or save files. Open this page in Chrome to install or download it — tap ⋮ → “Open in Chrome”, or copy the link below.</p>
+          <button class="btn btn-ghost btn-block" type="button" id="copyAppLinkBtn" hidden>⧉ Copy the Auralis link</button>
         </div>
         <div class="card download-card">
           <span class="pill free">Keep the files</span>
@@ -262,7 +265,7 @@
             <li>Unzip the folder it downloads.</li>
             <li>Double-click <strong>index.html</strong> — Auralis opens in your browser.</li>
           </ol>
-          <a class="btn btn-gold btn-block" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/heads/main.zip" rel="noopener">⬇ Download the files (ZIP)</a>
+          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.6.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
           <p class="muted" style="margin-top:10px">Every version, with notes: <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">GitHub Releases</a> · Source code: <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">github.com/moretoexplore1234/auralis-reader</a></p>
         </div>
       </div>
@@ -325,6 +328,7 @@
           </select>
           <span class="muted">Only voices in this language are shown — pick one in seconds. Tap a card to hear a preview or use it.</span>
         </div>
+        <p class="muted" id="voiceResetNote" hidden>Reset to English — tap another language if you want it.</p>
         <div class="voice-cards" id="voiceCards"></div>
         <div class="voice-warn" id="voiceEmptyState" hidden>
           <strong>No human-sounding voice is answering in this browser right now.</strong>
@@ -449,7 +453,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.5</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.6</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>
