@@ -53,10 +53,10 @@
       <form class="url-bar" id="urlForm" role="search" aria-label="Read a web page aloud">
         <label class="sr-only" for="urlInput">Article or web page URL</label>
         <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-               placeholder="Paste an article link — or an X post: x.com/…/status/…" required>
+               placeholder="Paste an article link — or a caption with a link in it" required>
         <button class="btn btn-gold" type="submit" id="readUrlBtn">▶&nbsp; Listen</button>
       </form>
-      <p class="url-hint">Paste an X / Twitter link — long posts and threads read aloud, start to finish.</p>
+      <p class="url-hint">Paste a link — or a caption with a link in it. Google share links and X posts work too: the link is pulled out of the caption automatically.</p>
       <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
@@ -449,7 +449,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.3</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.4</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>
@@ -464,7 +464,7 @@
 <div class="modal" id="pasteModal" role="dialog" aria-modal="true" aria-labelledby="pasteModalTitle" hidden>
   <div class="modal-card">
     <h2 id="pasteModalTitle">Paste text to hear read aloud</h2>
-    <p>Paste any text — an article, a document, your own notes. Nothing leaves your browser.</p>
+    <p>Paste any text — an article, a document, your own notes. Nothing leaves your browser. If your paste includes a link (for example a caption from your Google feed), Auralis loads the article from it — and reads your words instead if the page can't be reached.</p>
     <div class="field"><label for="pasteTitle">Title (optional)</label><input id="pasteTitle" placeholder="e.g. Notes on the morning news" maxlength="160"></div>
     <div class="field"><label for="pasteText">Text</label><textarea id="pasteText" rows="10" placeholder="Paste your text here…" style="min-height:180px"></textarea></div>
     <div class="modal-actions">

@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.3";
+  var APP_VERSION = "v1.4.4";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -60,7 +60,10 @@
     var sr = $("srStatus"); if (sr) sr.textContent = msg;
   }
 
-  function showStatus(kind, title, html, actionLabel, actionFn) {
+  // v1.4.4: an optional second action (extraLabel/extraFn) — the
+  // blocked-fetch errors offer TWO ways forward: read the pasted
+  // text instead, and open the original link in the browser.
+  function showStatus(kind, title, html, actionLabel, actionFn, extraLabel, extraFn) {
     var box = $("statusBox"); if (!box) return;
     box.hidden = false;
     box.innerHTML = "";
@@ -72,6 +75,12 @@
       b.type = "button";
       b.addEventListener("click", actionFn);
       card.appendChild(b);
+    }
+    if (extraLabel && extraFn) {
+      var b2 = el("button", "btn btn-ghost btn-small", extraLabel);
+      b2.type = "button";
+      b2.addEventListener("click", extraFn);
+      card.appendChild(b2);
     }
     box.appendChild(card);
     safeScrollIntoView(box);
@@ -339,9 +348,14 @@
   }
 
   function openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt) {
-    if (!bodyText || wordsOf(bodyText) < 20) {
+    // Floor is 5 words, not 20 (v1.4.4): a short caption the user
+    // pasted on purpose ("How to Read a Comparative Market Analysis
+    // in Del Mar", 10 words) is real reading material. Junk pages
+    // are already guarded earlier — the fetch path refuses anything
+    // under 40 words before it ever gets here.
+    if (!bodyText || wordsOf(bodyText) < 5) {
       showStatus("error", "Not enough text to read",
-        "That page didn't give us enough readable text (under 20 words). Try <strong>Paste text</strong> instead — you can copy the article text into Auralis directly.",
+        "That page didn't give us enough readable text (under 5 words). Try <strong>Paste text</strong> instead — you can copy the article text into Auralis directly.",
         "Paste text instead", openPasteModal);
       return;
     }
@@ -924,6 +938,141 @@
     ]);
   }
 
+  /* ---------------- links pasted with captions (v1.4.4) ----------------
+   * Carl pastes from his Google feed: a caption describing the
+   * article PLUS its link, e.g. "How to Read a Comparative Market
+   * Analysis in Del Mar https://share.google/ioXVzaqrTN7pGRRzx".
+   * The app must pull the link out of the caption — never make him
+   * delete the caption text to make the link work. */
+  var URL_IN_TEXT_RE = /https?:\/\/[^\s<>"'\]]+/gi;
+  // Strip trailing punctuation that belongs to the sentence, not the
+  // URL. A trailing ")" is dropped only when it is unmatched, so
+  // Wikipedia-style balanced parens survive.
+  function cleanExtractedUrl(u) {
+    var s = String(u || "");
+    while (s.length && /[.,;:!?'"\]}]/.test(s.charAt(s.length - 1))) s = s.slice(0, -1);
+    while (s.length && s.charAt(s.length - 1) === ")") {
+      var open = (s.match(/\(/g) || []).length, close = (s.match(/\)/g) || []).length;
+      if (close > open) s = s.slice(0, -1); else break;
+    }
+    return s;
+  }
+  // Every http(s) URL anywhere in the text, in order, de-duplicated.
+  function extractUrls(text) {
+    var found = [], m;
+    URL_IN_TEXT_RE.lastIndex = 0;
+    while ((m = URL_IN_TEXT_RE.exec(String(text || ""))) !== null) {
+      var u = cleanExtractedUrl(m[0]);
+      if (u && found.indexOf(u) === -1) found.push(u);
+    }
+    return found;
+  }
+  // Unwrap Google redirect links WITHOUT fetching anything:
+  // google.com/url?q=<real-url> and the AMP viewer
+  // (google.com/amp/s/<real-url>). share.google and news.google.com
+  // cannot be unwrapped from the URL alone — their destination lives
+  // server-side — so they pass through to resolveRedirectorUrl.
+  function unwrapGoogleUrl(raw) {
+    var u = String(raw || "");
+    try {
+      var p = new URL(u);
+      var host = p.hostname.replace(/^www\./, "").toLowerCase();
+      if (host === "google.com" || host.endsWith(".google.com")) {
+        if (p.pathname === "/url") {
+          var q = p.searchParams.get("q") || p.searchParams.get("url");
+          if (q) return q;
+        }
+        var amp = p.pathname.match(/^\/amp\/s\/(.+)$/);
+        if (amp) { try { return decodeURIComponent(amp[1]); } catch (e) { return amp[1]; } }
+        var amp2 = p.pathname.match(/^\/amp\/(https?:\/\/.+)$/);
+        if (amp2) return amp2[1];
+      }
+    } catch (e) { /* not a URL — return as-is */ }
+    return u;
+  }
+  // Hosts that never serve the article themselves: they redirect (or
+  // server-render a wrapper page) to the real article.
+  function isRedirectorHost(host) {
+    host = String(host || "").toLowerCase().replace(/^www\./, "");
+    return host === "share.google" || host === "news.google.com";
+  }
+  // The destination of a redirector page lives in its HTML: the
+  // canonical link (or og:url) points at the real article. Google's
+  // share page server-renders the article itself, so its canonical
+  // IS the destination.
+  function canonicalUrlFromHtml(html) {
+    try {
+      var doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      var link = doc.querySelector('link[rel="canonical"]');
+      var href = link && link.getAttribute("href");
+      if (href) return href;
+      var og = doc.querySelector('meta[property="og:url"]');
+      var c = og && og.getAttribute("content");
+      return c || "";
+    } catch (e) { return ""; }
+  }
+  // Resolve a redirector URL to the real article URL. Tries the raw
+  // page first (direct fetch), then AllOrigins (raw HTML, keeps the
+  // canonical link), then Jina Reader (markdown — no canonical, so
+  // it only counts if the others failed and the page is already the
+  // article). Returns the original URL when nothing resolves, so the
+  // normal fetch path still runs. Never throws.
+  function resolveRedirectorUrl(url) {
+    var parsed;
+    try { parsed = new URL(url); } catch (e) { return Promise.resolve(url); }
+    if (!isRedirectorHost(parsed.hostname)) return Promise.resolve(url);
+    var attempts = [
+      { name: "direct", fetch: function () { return fetchWithTimeout(url, 15000); } },
+      { name: "AllOrigins", fetch: function () { return fetchWithTimeout("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), 15000); } },
+      { name: "Jina Reader", fetch: function () { return fetchWithTimeout("https://r.jina.ai/" + url, 15000); } }
+    ];
+    var i = 0;
+    function nextAttempt() {
+      if (i >= attempts.length) return Promise.resolve(url);
+      var a = attempts[i++];
+      return a.fetch().then(function (resp) {
+        if (!resp.ok) throw new Error(a.name + " HTTP " + resp.status);
+        return resp.text();
+      }).then(function (text) {
+        var dest = canonicalUrlFromHtml(text);
+        if (dest) {
+          try {
+            var d = new URL(dest, url);
+            if (/^https?:$/.test(d.protocol) && !isRedirectorHost(d.hostname) && !/\.google\.com$/i.test(d.hostname) && d.hostname !== "google.com") return d.href;
+          } catch (e) { /* bad canonical — try the next source */ }
+        }
+        return nextAttempt();
+      }).catch(function () { return nextAttempt(); });
+    }
+    return nextAttempt();
+  }
+  // Open a link in the visitor's browser (new tab). Used by the
+  // blocked-fetch fallback — never a fetch, never a bypass.
+  function openExternal(url) {
+    try { window.open(url, "_blank", "noopener,noreferrer"); } catch (e) { toast("Couldn't open the link — copy it from the address bar."); }
+  }
+  // A short title from pasted text: the whole caption when it fits,
+  // else the first ~90 characters cut at a word boundary.
+  function deriveTitleFromText(text) {
+    var t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return "Pasted text";
+    if (t.length <= 90) return t;
+    return t.slice(0, 90).replace(/\s+\S*$/, "") + "…";
+  }
+  // Read the user's own pasted caption as the article. This is the
+  // honest fallback when the original page can't be fetched: the
+  // words are the visitor's own, so reading them aloud bypasses
+  // nothing. Returns true when it opened, false when there wasn't
+  // enough pasted text to read.
+  function openFallbackText(fallback, url) {
+    var text = (fallback && fallback.text) || "";
+    if (wordsOf(text) < 5) { toast("There's not enough pasted text to read — try opening the original link instead."); return false; }
+    var title = (fallback && fallback.title) || deriveTitleFromText(text);
+    openArticle(title, "Pasted text", "Pasted by you · " + wordsOf(text) + " words · the original page couldn't be read", text);
+    toast("Reading your pasted text — the original page couldn't be read aloud.");
+    return true;
+  }
+
   function fetchArticle(url) {
     var attempts = [{ name: "direct", url: url }];
     (CFG.FETCH_PROXIES || []).forEach(function (p) {
@@ -934,18 +1083,46 @@
       chain = chain.catch(function () {
         return fetchWithTimeout(a.url, 15000).then(function (resp) {
           if (!resp.ok) throw new Error(a.name + " returned HTTP " + resp.status);
-          return resp.text().then(function (text) { return { via: a.name, text: text }; });
+          // resp.url is the FINAL url after redirects — but only the
+          // direct attempt's value means anything (a proxy's url is
+          // the proxy itself). Used for the real destination after a
+          // news.google.com redirect, and for "Open the original
+          // link" after a fetch.
+          return resp.text().then(function (text) { return { via: a.name, text: text, finalUrl: a.name === "direct" ? (resp.url || null) : null }; });
         });
       });
     });
     return chain;
   }
 
-  function readUrl(rawUrl) {
-    var url = (rawUrl || "").trim();
+  // rawUrl may be a bare link, a caption with a link in it, or a
+  // Google redirect wrapper. fallbackText/fallbackTitle (from Paste
+  // Text) are the user's own words, kept as the read-aloud fallback
+  // when the page itself can't be fetched.
+  function readUrl(rawUrl, fallbackText, fallbackTitle) {
+    var input = (rawUrl || "").trim();
+    // Pull the first link out of whatever was pasted — caption text
+    // around it is fine, and stays as the fallback (v1.4.4).
+    var urls = extractUrls(input);
+    var caption = "";
+    var url;
+    if (urls.length) {
+      url = unwrapGoogleUrl(urls[0]);
+      var rest = (fallbackText != null && fallbackText !== "") ? fallbackText : input.split(urls[0]).join(" ");
+      caption = String(rest || "").replace(/\s+/g, " ").trim();
+      if (url !== urls[0]) caption = caption.split(url).join(" ").replace(/\s+/g, " ").trim();
+    } else {
+      url = input;
+    }
     if (!/^https?:\/\//i.test(url)) url = "https://" + url;
     var parsed;
     try { parsed = new URL(url); } catch (e) {
+      // No usable link at all: if the user pasted a decent chunk of
+      // text, just read it — never make them re-paste (v1.4.4).
+      if (wordsOf(input) >= 5) {
+        openArticle((fallbackTitle || deriveTitleFromText(input)), "Pasted text", "Pasted by you · " + wordsOf(input) + " words", input);
+        return;
+      }
       showStatus("error", "That link doesn't look right", "Check the URL and try again — it should start with <strong>https://</strong>.");
       return;
     }
@@ -953,6 +1130,7 @@
       showStatus("error", "Only web pages can be read", "Auralis reads public <strong>http(s)</strong> pages. Paste text instead for anything else.");
       return;
     }
+    var fallback = wordsOf(caption) >= 5 ? { text: caption, title: fallbackTitle || "" } : null;
     var btn = $("readUrlBtn");
     setBusy(btn, true, "Fetching…");
     var x = parseXUrl(url);
@@ -973,55 +1151,88 @@
         // Fall through to the generic article fetch (Jina / AllOrigins can
         // sometimes still read a public post page). If that fails too, the
         // honest error below explains it and offers Paste text.
-        fetchArticleGeneric(url, btn, parsed);
+        fetchArticleGeneric(url, btn, parsed, fallback);
       });
       return;
     }
     showStatus("", "Fetching the article…", "Trying the page directly, then a free public reader proxy if the site blocks cross-site reading. This usually takes a few seconds.");
-    fetchArticleGeneric(url, btn, parsed);
+    // Google share / news links never serve the article themselves:
+    // resolve them to the real destination first (v1.4.4).
+    resolveRedirectorUrl(url).then(function (resolved) {
+      var target = parsed;
+      if (resolved !== url) { try { target = new URL(resolved); } catch (e) { target = parsed; } }
+      fetchArticleGeneric(resolved, btn, target, fallback);
+    });
   }
 
   // Generic (non-X) article fetch, shared by the X fallback path.
-  function fetchArticleGeneric(url, btn, parsed) {
+  // `fallback` is the user's own pasted caption ({ text, title }),
+  // offered as the read-aloud fallback whenever the page itself
+  // can't be read — reading the visitor's own words bypasses
+  // nothing. Every failure explains itself in plain words and
+  // offers "Open the original link" — never a bare dead end.
+  function fetchArticleGeneric(url, btn, parsed, fallback) {
+    var openUrl = url; // replaced by the fetch's final URL when known
+    var hasFallback = !!(fallback && wordsOf(fallback.text || "") >= 5);
+    function errWithFallback(title, html) {
+      setBusy(btn, false, "▶  Listen");
+      if (hasFallback) {
+        showStatus("error", title, html,
+          "Read what you pasted instead", function () { openFallbackText(fallback, openUrl); },
+          "Open the original link", function () { openExternal(openUrl); });
+      } else {
+        showStatus("error", title, html,
+          "Open the original link", function () { openExternal(openUrl); },
+          "Paste text instead", openPasteModal);
+      }
+    }
     fetchArticle(url).then(function (res) {
       var text = res.text || "";
-      var blockKind = looksBlockedOrPaywalled(text, text);
-      var extracted = extractFromHtml(text, url);
+      if (res.finalUrl) openUrl = res.finalUrl;
+      var extracted = extractFromHtml(text, openUrl);
+      var visible = extracted.text || "";
+      // Blocked/paywall hints are judged on the VISIBLE text, never
+      // on raw HTML (v1.4.4): a real article page routinely embeds
+      // reCAPTCHA scripts for its own forms, and the word "captcha"
+      // in a script is not a block — that false positive is exactly
+      // what told Carl his share.google link was "blocked". A
+      // genuine block page has no article text at all, so its
+      // visible text is what carries the "verify you are human"
+      // wording. And when real article text IS there (40+ words),
+      // a "blocked" hint is ignored outright.
+      var blockKind = looksBlockedOrPaywalled(visible, extracted.title || "");
+      if (wordsOf(visible) >= 40 && blockKind === "blocked") blockKind = null;
       if (blockKind === "blocked") {
-        setBusy(btn, false, "▶  Listen");
-        showStatus("error", "This page blocked the reader",
-          "The site refused to share its text with a reader (bot protection or an access block). <strong>Auralis never tries to bypass blocks or paywalls.</strong> You can still copy the article text yourself and use <strong>Paste text</strong>.",
-          "Paste text instead", openPasteModal);
+        errWithFallback("This page blocked the reader",
+          "The site refused to share its text with a reader (bot protection or an access block). <strong>Auralis never tries to bypass blocks or paywalls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original page in your browser." : " You can open the original page in your browser, or copy the article text yourself and use <strong>Paste text</strong>."));
         return;
       }
       if (!extracted.text || wordsOf(extracted.text) < 40) {
         if (blockKind === "paywall") {
-          setBusy(btn, false, "▶  Listen");
-          showStatus("error", "This looks paywalled",
-            "The page we could reach asks readers to subscribe before showing the article. <strong>Auralis doesn't bypass paywalls.</strong> If you have access, copy the text and use <strong>Paste text</strong> instead.",
-            "Paste text instead", openPasteModal);
+          errWithFallback("This looks paywalled",
+            "The page we could reach asks readers to subscribe before showing the article. <strong>Auralis doesn't bypass paywalls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original page in your browser." : " If you have access, copy the text and use <strong>Paste text</strong> instead, or open the original page in your browser."));
           return;
         }
-        setBusy(btn, false, "▶  Listen");
-        showStatus("error", "Couldn't find the article text",
-          "We reached the page via <strong>" + esc(res.via) + "</strong>, but couldn't find enough article text — it may be mostly images, video, or a script-heavy page. Try <strong>Paste text</strong> with the article copied from the page.",
-          "Paste text instead", openPasteModal);
+        errWithFallback("Couldn't find the article text",
+          "We reached the page via <strong>" + esc(res.via) + "</strong>, but couldn't find enough article text — it may be mostly images, video, or a script-heavy page." + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original page in your browser." : " Try <strong>Paste text</strong> with the article copied from the page, or open the original page in your browser."));
         return;
       }
       setBusy(btn, false, "▶  Listen");
-      var byline = extracted.author ? "By " + extracted.author + " · " + parsed.hostname : parsed.hostname + " · via " + res.via;
-      openArticle(extracted.title, parsed.hostname, byline, extracted.text, extracted.clutterRemoved || 0);
+      // Show the DESTINATION host when the fetch followed a redirect
+      // (e.g. news.google.com → the publisher), not the redirector.
+      var displayHost = parsed.hostname;
+      try { if (res.finalUrl) displayHost = new URL(res.finalUrl).hostname; } catch (e) {}
+      var byline = extracted.author ? "By " + extracted.author + " · " + displayHost : displayHost + " · via " + res.via;
+      openArticle(extracted.title, displayHost, byline, extracted.text, extracted.clutterRemoved || 0);
     }).catch(function (err) {
       setBusy(btn, false, "▶  Listen");
       if (parseXUrl(url)) {
-        showStatus("error", "Couldn't read that X post",
-          "Every route failed (" + esc(err && err.message ? err.message : "network error") + "). The post may be deleted, protected, or from an account that limits readers. <strong>Auralis never bypasses login walls.</strong> You can still copy the post text yourself and use <strong>Paste text</strong>.",
-          "Paste text instead", openPasteModal);
+        errWithFallback("Couldn't read that X post",
+          "Every route failed (" + esc(err && err.message ? err.message : "network error") + "). The post may be deleted, protected, or from an account that limits readers. <strong>Auralis never bypasses login walls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original post in your browser." : " You can still copy the post text yourself and use <strong>Paste text</strong>, or open the original post in your browser."));
         return;
       }
-      showStatus("error", "Couldn't reach that page",
-        "Every fetch route failed (" + esc(err && err.message ? err.message : "network error") + "). The site may be down, offline, or blocking readers. Check the link, or use <strong>Paste text</strong>.",
-        "Paste text instead", openPasteModal);
+      errWithFallback("Couldn't reach that page",
+        "Every fetch route failed (" + esc(err && err.message ? err.message : "network error") + "). The site may be down, offline, or blocking readers. Check the link" + (hasFallback ? ", hear your pasted text instead," : "") + " or open the original page in your browser.");
     });
   }
 
@@ -1032,9 +1243,18 @@
   function readPastedText() {
     var text = ($("pasteText").value || "").trim();
     if (wordsOf(text) < 5) { toast("Paste a little more text first — at least a sentence or two."); return; }
-    var title = ($("pasteTitle").value || "").trim() || "Pasted text";
+    var title = ($("pasteTitle").value || "").trim() || "";
+    // A caption with a link in it: load the article, and keep the
+    // caption as the fallback if the page can't be fetched (v1.4.4).
+    var urls = extractUrls(text);
+    if (urls.length) {
+      var caption = text.split(urls[0]).join(" ").replace(/\s+/g, " ").trim();
+      closePasteModal();
+      readUrl(urls[0], caption, title);
+      return;
+    }
     closePasteModal();
-    openArticle(title, "Pasted text", "Pasted by you · " + wordsOf(text) + " words", text);
+    openArticle(title || "Pasted text", "Pasted text", "Pasted by you · " + wordsOf(text) + " words", text);
   }
 
   function handleFile(file) {
@@ -1365,7 +1585,7 @@
     // The card itself is NOT clickable: nested interactive elements
     // meant a Preview tap could be swallowed by the card's own click
     // handler. Only the two buttons below act.
-    pv.addEventListener("click", function () { previewFreeVoice(entry, engine); });
+    pv.addEventListener("click", function () { previewFreeVoice(entry, engine, pv); });
     actions.appendChild(pv);
     var use = el("button", "btn btn-dark btn-small", selected ? "✓ Using" : "Use this voice");
     use.type = "button";
@@ -2002,6 +2222,10 @@
     var html = esc(reason);
     if (detail) html += "<span class=\"error-detail\">Details: " + esc(detail) + "</span>";
     err.innerHTML = html;
+    // The error must be SEEN (v1.4.4): on a phone the reader can be
+    // scrolled far from this box, so a blocked-play error used to
+    // appear silently off-screen.
+    safeScrollIntoView(err);
   }
   // A failed listen stops HERE, on this sentence, with a loud reason.
   // It never advances through errors to 100% and never toasts
@@ -2017,6 +2241,7 @@
     updateProgress();
     toast("Playback failed — " + reason + " Tap Play to retry.");
   }
+  var firstPlayToastShown = false;
   function playFree(fromIdx) {
     if (!state.sentences.length) { toast("Open an article first."); return; }
     state.playing = true; state.paused = false; state.engine = "free"; state.finished = false;
@@ -2041,9 +2266,19 @@
       // anything was happening. Restored to Pause when audio arrives.
       if (currentVoiceChoice().engine === "kokoro" && !kokoro.tts && !kokoro.failed) {
         setPlayButtonLabel("⏳ Loading voices…");
+        // Say the wait out loud once (v1.4.4): on a phone the load
+        // box lives in the Voices section, below the fold — the
+        // visitor looking at the player would otherwise see only a
+        // loading label and no reason for it.
+        if (!firstPlayToastShown && !storeGet("auralis.kokoro.seen", false)) {
+          firstPlayToastShown = true;
+          toast("First play downloads the voice model once (~90MB) — then it works offline. This can take a minute on a slow connection…");
+        }
+        startLoadWatchdog();
       }
       freeFetchAudio(s.text).then(function (audio) {
         if (!state.playing || state.engine !== "free") return;
+        stopLoadWatchdog();
         setPlayButton(true);
         state.freeAudio = audio;
         freeWordTimer(s, audio._durMs);
@@ -2055,13 +2290,20 @@
           // count toward the progress bar.
           state.progressSentence = idx;
           updateProgress();
-        }).catch(function () { failPlayback("Audio playback was blocked by the browser — tap Play again."); });
+        }).catch(function () {
+          // A play() this late can be refused because the tap's
+          // user gesture has expired while the model downloaded —
+          // the voice IS downloaded now, so a second tap starts
+          // right away. Say that plainly (v1.4.4).
+          failPlayback("The browser blocked the sound because the voice took a while to download — tap Play again and it will start right away (the voice is downloaded now).");
+        });
       }).catch(function (err) {
         // No human-sounding free engine could play. Never fall back
         // to a robotic voice — say so honestly instead, with the
         // real error as a details line (v1.4.2).
         try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Play failed:", err); } catch (e) {}
         state.playing = false; state.paused = false;
+        stopLoadWatchdog();
         setPlayButton(false);
         updateVoiceEmptyState();
         failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.", kokoro.failDetail || rawErrorDetail(err));
@@ -2069,33 +2311,53 @@
     }
     next();
   }
-  function previewEdgeVoice(ev) {
+  // A Preview tap must NEVER look dead (v1.4.4): on a first tap the
+  // model still has to download (~90MB), which takes a while on a
+  // phone — so the button says so immediately, and a toast explains
+  // the wait. Without this the button sat unchanged for a minute
+  // while the download ran, which is exactly what Carl reported.
+  function setPreviewBusy(btn, busy) {
+    if (!btn) return;
+    btn.disabled = !!busy;
+    if (busy) { btn.dataset.label = btn.textContent; btn.textContent = "⏳ Loading…"; }
+    else if (btn.dataset.label) { btn.textContent = btn.dataset.label; delete btn.dataset.label; }
+  }
+  function previewEdgeVoice(ev, btn) {
+    setPreviewBusy(btn, true);
     var sample = languageEntry(currentLanguage()).sample;
     edgeSynthesize(sample, ev.name, localeOf(ev.name)).then(function (blob) {
+      setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function () {
+      setPreviewBusy(btn, false);
       // Same loud handling as playback: say Microsoft is down, switch
       // the free engine to Kokoro, and do NOT play any other voice
       // as if it were this one.
       markEdgeDown();
     });
   }
-  function previewKokoroVoice(ev) {
+  function previewKokoroVoice(ev, btn) {
+    setPreviewBusy(btn, true);
     var sample = languageEntry(currentLanguage()).sample;
+    if (!kokoro.tts && !kokoro.failed) {
+      toast("Loading the on-device voices for the first time (~90MB, once) — this can take a minute on a slow connection…");
+    }
     kokoroSynthesize(sample, ev.name).then(function (res) {
+      setPreviewBusy(btn, false);
       var a = new Audio(URL.createObjectURL(res.blob));
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       a.play().catch(function () { toast("Audio playback was blocked — tap Preview again."); });
     }).catch(function (err) {
+      setPreviewBusy(btn, false);
       try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro preview failed:", err); } catch (e) {}
       toast("Couldn't load the on-device voices (" + plainKokoroError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
     });
   }
-  function previewFreeVoice(entry, engine) {
-    if (engine === "edge") previewEdgeVoice(entry);
-    else previewKokoroVoice(entry);
+  function previewFreeVoice(entry, engine, btn) {
+    if (engine === "edge") previewEdgeVoice(entry, btn);
+    else previewKokoroVoice(entry, btn);
   }
 
   function setPlayButton(playing) {
@@ -2107,6 +2369,28 @@
     var b = $("playPauseBtn"); if (b) b.textContent = text;
     var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = text;
   }
+  // Stuck-load watchdog (v1.4.4): a first load on a phone can take
+  // minutes (90MB model on mobile data) with long gaps between
+  // progress events — during those gaps the Play button used to sit
+  // frozen on "Loading voices…" and look dead. Every 5s while a
+  // load is in flight and nothing has arrived yet, the button shows
+  // the elapsed time (and the last percentage, when one was reported)
+  // so the visitor can see it is still working. Stops itself the
+  // moment the model loads, the load fails, or playback stops.
+  var loadWatchTimer = null;
+  var loadWatchStartedAt = 0;
+  function startLoadWatchdog() {
+    if (loadWatchTimer) return;
+    loadWatchStartedAt = Date.now();
+    loadWatchTimer = setInterval(function () {
+      if (!state.playing || state.paused || kokoro.tts || kokoro.failed) { stopLoadWatchdog(); return; }
+      var secs = Math.round((Date.now() - loadWatchStartedAt) / 1000);
+      var pct = "";
+      try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+      setPlayButtonLabel("⏳ Loading voices…" + pct + " · " + secs + "s");
+    }, 5000);
+  }
+  function stopLoadWatchdog() { if (loadWatchTimer) { clearInterval(loadWatchTimer); loadWatchTimer = null; } }
   function syncBottomBar() {
     var nameEl = $("bottomVoiceName");
     if (!nameEl) return;
@@ -3125,14 +3409,15 @@
       a.addEventListener("click", function () { setMore(true); });
     });
 
-    // Auto-paste: if the clipboard holds a URL, offer it with one tap.
-    // Clipboard access needs permission; a denial is silent — no error.
+    // Auto-paste: if the clipboard holds a link (bare, or inside a
+    // caption — v1.4.4), offer it with one tap. Clipboard access
+    // needs permission; a denial is silent — no error.
     var clipboardUrl = "";
     function tryClipboardUrl() {
       if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") return;
       navigator.clipboard.readText().then(function (text) {
         var t = String(text || "").trim();
-        if (/^https?:\/\/\S+$/i.test(t)) {
+        if (extractUrls(t).length) {
           clipboardUrl = t;
           var b = $("pasteClipboardBtn");
           if (b) b.hidden = false;
