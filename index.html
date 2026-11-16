@@ -57,10 +57,21 @@
         <button class="btn btn-gold" type="submit" id="readUrlBtn">▶&nbsp; Listen</button>
       </form>
       <p class="url-hint">Paste a link — or a caption with a link in it. Google share links and X posts work too: the link is pulled out of the caption automatically.</p>
+      <!-- v1.4.7: warm-up progress, visible at the TOP of the page
+           from the moment the page loads. The old indicator lives
+           in the Voices section, below the fold — a browser check
+           saw no warm-up indicator on load at all. Mirrors the
+           same label + % as the Voices load box (app.js
+           showKokoroLoading drives both). -->
+      <div class="warmup-banner" id="warmupBanner" hidden>
+        <div class="warmup-bar"><div class="warmup-fill" id="warmupFill"></div></div>
+        <span id="warmupText">Getting the voice ready…</span>
+        <span class="muted warmup-note">The voice downloads once (~90MB) — about a minute on a slow connection, then it works offline.</span>
+      </div>
       <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
-        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.6.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
+        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.7.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
         <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
         <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
         <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
@@ -265,7 +276,7 @@
             <li>Unzip the folder it downloads.</li>
             <li>Double-click <strong>index.html</strong> — Auralis opens in your browser.</li>
           </ol>
-          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.6.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
+          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.7.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
           <p class="muted" style="margin-top:10px">Every version, with notes: <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">GitHub Releases</a> · Source code: <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">github.com/moretoexplore1234/auralis-reader</a></p>
         </div>
       </div>
@@ -453,7 +464,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.6</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.7</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>
@@ -481,7 +492,6 @@
 <!-- AI app edit is inline; generic confirm lives in JS via toast -->
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<div class="sr-only" aria-live="polite" id="srStatus"></div>
 
 <script src="config.js"></script>
 <script src="app.js"></script>

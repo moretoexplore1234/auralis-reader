@@ -275,10 +275,14 @@ body.reader-mode.reader-dark .reader-byline { color: #B9B2A2; }
 .error-detail { display: block; margin-top: 4px; font-weight: 400; font-size: .82rem; color: #6b5a52; word-break: break-word; }
 
 .player {
-  position: sticky; top: 71px; z-index: 20; margin: 18px 0 0;
+  position: sticky; top: 71px; z-index: 30; margin: 18px 0 0;
   background: var(--ink); color: var(--ivory);
   padding: 16px 30px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
   border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  /* v1.4.7: z-index 30, above the sticky bottom player (25) — in
+     some scroll positions the bottom player used to paint OVER
+     this player and cover the Stop button, so a tap on Stop was
+     refused as covered. The player now wins any overlap. */
 }
 .player-controls { display: flex; gap: 8px; align-items: center; }
 .player-btn {
@@ -463,6 +467,10 @@ section[id] { scroll-margin-top: 88px; }
   background: var(--paper); color: var(--paper-ink); padding: 12px 18px; border-radius: 999px;
   box-shadow: var(--shadow); font-size: .92rem; font-weight: 600; z-index: 90;
   opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease; max-width: calc(100% - 32px);
+  /* v1.4.7: long status messages must WRAP, never truncate — the
+     "Reset to English" toast was cut off mid-sentence ("…Voices
+     sect") in a browser check. A pill that wraps reads fully. */
+  white-space: normal; text-align: center; line-height: 1.45; overflow-wrap: break-word;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -478,6 +486,13 @@ section[id] { scroll-margin-top: 88px; }
 .removed-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .removed-row { display: flex; gap: 10px; align-items: flex-start; background: rgba(201,169,106,.08); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .removed-text { flex: 1; font-size: .9rem; color: var(--muted); }
+
+/* ---------- v1.4.7: warm-up banner (top of page) ---------- */
+.warmup-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(201,169,106,.08); font-size: .92rem; font-weight: 600; }
+.warmup-banner[hidden] { display: none; }
+.warmup-bar { width: 140px; height: 8px; border-radius: 999px; background: rgba(201,169,106,.25); overflow: hidden; flex-shrink: 0; }
+.warmup-fill { height: 100%; width: 0; background: var(--gold); border-radius: 999px; transition: width .3s ease; }
+.warmup-note { font-weight: 400; }
 
 /* ---------- v1.4: Kokoro load state, audio download, free-key guide ---------- */
 .kokoro-load { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(201,169,106,.08); font-size: .92rem; }

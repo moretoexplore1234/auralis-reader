@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.6";
+  var APP_VERSION = "v1.4.7";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -57,7 +57,13 @@
     t.textContent = msg; t.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.classList.remove("show"); }, 3200);
-    var sr = $("srStatus"); if (sr) sr.textContent = msg;
+    // v1.4.7: the toast itself is role="status" aria-live="polite"
+    // (see index.html), so it is announced once. The old code also
+    // mirrored every message into a separate #srStatus live region,
+    // so a text extraction saw each status TWICE ("Ready — press
+    // play to listen." x2, "Making the preview sounds…" x2) — the
+    // duplication a browser check flagged three times in a row.
+    // #srStatus is gone; one message, one place.
   }
 
   // v1.4.4: an optional second action (extraLabel/extraFn) — the
@@ -205,7 +211,7 @@
       meta.appendChild(el("span", null, minutesText(wordsOf(s.body), 1) + " listen"));
       meta.appendChild(el("span", null, "Listen →"));
       card.appendChild(meta);
-      card.addEventListener("click", function () { openArticle(s.title, s.source, "Auralis · original sample", s.body); });
+      card.addEventListener("click", function () { openArticle(s.title, s.source, "Auralis · original sample", s.body, 0, undefined, { autoplay: true }); });
       grid.appendChild(card);
     });
   }
@@ -263,7 +269,15 @@
         var sentSpan = el("span", "sentence");
         sentSpan.dataset.para = String(pi);
         s.split(/\s+/).forEach(function (w) {
-          sentSpan.appendChild(el("span", "word", w + " "));
+          // v1.4.7: the space between words is its OWN text node,
+          // not a trailing space inside the word span. A space at
+          // the end of an inline element is dropped by text and
+          // accessibility extraction, so the article read as one
+          // mashed word ("Asinglematurestreettreedoesmorework…")
+          // even though it looked spaced on screen. A standalone
+          // space text node survives both rendering and extraction.
+          sentSpan.appendChild(el("span", "word", w));
+          sentSpan.appendChild(document.createTextNode(" "));
         });
         p.appendChild(sentSpan);
       });
@@ -351,7 +365,14 @@
     $("timeRemaining").textContent = remaining <= 0 ? "Finished" : minutesText(remaining, currentRate()) + " remaining";
   }
 
-  function openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt) {
+  // opts.autoplay (v1.4.7): the tap that opened this article was a
+  // LISTEN tap — a sample card ("Listen to sample") or "Try a
+  // sample". Playback must start by itself once the voice is ready;
+  // parking at "Ready — press play to listen." and needing a second
+  // tap is exactly what Carl reported as "it didn't load at all"
+  // (v1.4.6 check: 60s of silence, then a second tap needed).
+  function openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt, opts) {
+    var autoplay = !!(opts && opts.autoplay);
     // Floor is 5 words, not 20 (v1.4.4): a short caption the user
     // pasted on purpose ("How to Read a Comparative Market Analysis
     // in Del Mar", 10 words) is real reading material. Junk pages
@@ -418,7 +439,16 @@
       }
       buildModel(title, source, byline, keptText);
       renderRadarResult();
-      prefetchFirstSentence(); // v1.4.6: first sentence ready before Play is tapped
+      if (autoplay) {
+        // v1.4.7: a Listen tap means listen. playFree waits on the
+        // model itself and starts the first sentence as soon as it
+        // exists — no prefetch detour, no "Ready — press play"
+        // parking. (The prefetch below is only for non-autoplay
+        // opens, where Play is a later, separate tap.)
+        playFree(0, true);
+      } else {
+        prefetchFirstSentence(); // v1.4.6: first sentence ready before Play is tapped
+      }
       if (typeof resumeAt === "number" && state.sentences.length) {
         var target = clamp(resumeAt, 0, state.sentences.length - 1);
         state.currentSentence = target;
@@ -426,7 +456,7 @@
         updateProgress();
       }
       saveProgressToLibrary(true);
-      toast("Ready — press play to listen.");
+      if (!autoplay) toast("Ready — press play to listen.");
     }
     if (hfEnabled() && radar.borderline.length) {
       var hfTimer = setTimeout(finishRadar, 8000);
@@ -1355,7 +1385,7 @@
    * entry: voice id, label, plain-language description with a
    * "Best for:" line, accent tag, gender, use-case tag. */
   var VOICE_LANGUAGES = [
-    { code: "en", label: "English", sample: "Hello — I'm Auralis. I can read any article aloud for you, in a voice that sounds almost human.", voices: [
+    { code: "en", label: "English", sample: "Hello — I'm your reader. I can read any article aloud for you, in a voice that sounds almost human.", voices: [
       { name: "en-US-AriaNeural", label: "Microsoft Aria", desc: "Warm, friendly American woman — our most natural free voice. Best for: articles and news.", accent: "US", gender: "Female", use: "Articles", recommended: true },
       { name: "en-US-JennyNeural", label: "Microsoft Jenny", desc: "Bright, upbeat American woman. Best for: stories and audiobooks.", accent: "US", gender: "Female", use: "Stories" },
       { name: "en-US-GuyNeural", label: "Microsoft Guy", desc: "Calm, steady American man. Best for: long articles and narration.", accent: "US", gender: "Male", use: "Articles" },
@@ -2088,6 +2118,12 @@
   function kokoroLoadText() { return $("kokoroLoadText"); }
   function kokoroLoadFill() { return $("kokoroLoadFill"); }
   function kokoroLoadBox() { return $("kokoroLoadBox"); }
+  // v1.4.7: the warm-up indicator must be visible at the TOP of
+  // the page from the moment the page loads — the old load box
+  // lives in the Voices section, below the fold, so a browser
+  // check (Nov 16) saw no warm-up indicator on load at all. The
+  // banner mirrors the same label + % as the load box.
+  function warmupBanner() { return $("warmupBanner"); }
   function showKokoroLoading(label, pct) {
     var box = kokoroLoadBox();
     if (box) box.hidden = false;
@@ -2095,10 +2131,20 @@
     if (t) t.textContent = label;
     var f = kokoroLoadFill();
     if (f) f.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+    var banner = warmupBanner();
+    if (banner) {
+      banner.hidden = false;
+      var bt = $("warmupText");
+      if (bt) bt.textContent = label + ((typeof pct === "number" && pct > 0 && String(label).indexOf("%") === -1) ? " " + Math.round(pct) + "%" : "");
+      var bf = $("warmupFill");
+      if (bf) bf.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+    }
   }
   function hideKokoroLoading() {
     var box = kokoroLoadBox();
     if (box) box.hidden = true;
+    var banner = warmupBanner();
+    if (banner) banner.hidden = true;
   }
   function kokoroFail(reason, rawErr, quiet) {
     kokoro.failed = true;
@@ -2572,7 +2618,15 @@
     return state.sentences.slice(0, 4).map(function (s) { return s.text; }).join(" ");
   }
   var firstPlayToastShown = false;
-  function playFree(fromIdx) {
+  // autoplay (v1.4.7): true when the article was opened by a Listen
+  // tap (sample card / "Try a sample"). The tap's intent is to
+  // listen, so playback starts by itself once the voice is ready.
+  // If the browser refuses the delayed audio.play() because the
+  // tap's user gesture has expired (long model download), that is
+  // NOT a playback failure — the voice is downloaded now, so the
+  // player parks in a plain "voice is ready, tap Play" state and
+  // the next tap starts at once. Never the v1.4.4 failure box.
+  function playFree(fromIdx, autoplay) {
     if (!state.sentences.length) { toast("Open an article first."); return; }
     // v1.4.6: a previous failed load must not make "tap Play to
     // retry" a lie — a deliberate new tap clears the failure and
@@ -2682,6 +2736,18 @@
           // the voice IS downloaded now, so a second tap starts
           // right away. Say that plainly (v1.4.4).
           state.waitingFirstAudio = false;
+          stopLoadWatchdog();
+          if (autoplay) {
+            // v1.4.7: an auto-play that the browser blocked is not
+            // a failure — park in "voice ready" and let the next
+            // tap start at once, with no failure box.
+            state.playing = false; state.paused = false;
+            state.engine = "free";
+            setPlayButton(false);
+            setPlayButtonLabel("▶ Tap to listen — voice is ready");
+            toast("The voice is ready — tap Play to start listening.");
+            return;
+          }
           failPlayback("The browser blocked the sound because the voice took a while to download — tap Play again and it will start right away (the voice is downloaded now).");
         });
       }).catch(function (err) {
@@ -3877,7 +3943,7 @@
     });
     $("surpriseBtn").addEventListener("click", function () {
       var s = SAMPLES[Math.floor(Math.random() * SAMPLES.length)];
-      openArticle(s.title, s.source, "Auralis · original sample", s.body);
+      openArticle(s.title, s.source, "Auralis · original sample", s.body, 0, undefined, { autoplay: true });
     });
 
     // Player.
@@ -4008,8 +4074,8 @@
     } catch (e) { /* malformed deep link — ignore */ }
     // Hook openArticle's completion for the deep-link play offer.
     var _openArticle = openArticle;
-    openArticle = function (title, source, byline, bodyText, clutterRemoved, resumeAt) {
-      _openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt);
+    openArticle = function (title, source, byline, bodyText, clutterRemoved, resumeAt, opts) {
+      _openArticle(title, source, byline, bodyText, clutterRemoved, resumeAt, opts);
       if (deepLinkPending) {
         deepLinkPending = false;
         showStatus("ok", "Loaded from your link — ready to listen",
@@ -4178,23 +4244,26 @@
     // again if they want it.
     var resetNote = resetNonEnglishSavedChoice();
     if (resetNote) {
+      // v1.4.7: the reset note lives ONLY here, in the voice menu
+      // (#voiceResetNote). The old code ALSO toasted the same
+      // sentence, so a text extraction saw it twice — and the long
+      // toast was truncated mid-sentence ("…Voices sect"). One
+      // message, one place.
       var rn = $("voiceResetNote");
       if (rn) rn.hidden = false;
     }
     // v1.4.6: on the first run of a new version, say which voice
     // and language the app is actually using — no silent defaults.
-    // (One toast only: the reset note takes precedence when both fire.)
+    // (One toast only: when a reset happened, the note above is the
+    // whole message — no second toast saying the same thing.)
     var seenVersion = null;
     try { seenVersion = storeGet("auralis.version.seen", null); } catch (e) {}
     if (seenVersion !== APP_VERSION) {
       try { storeSet("auralis.version.seen", APP_VERSION); } catch (e) {}
-      if (resetNote) toast(resetNote);
-      else {
+      if (!resetNote) {
         var vc0 = currentVoiceChoice();
         toast("Auralis updated to " + APP_VERSION + " — voice: " + freeVoiceLabel(vc0) + " · " + languageEntry(vc0.lang || currentLanguage()).label + ". Change it in the Voices section.");
       }
-    } else if (resetNote) {
-      toast(resetNote);
     }
     var langSel = $("voiceLangSelect");
     if (langSel) {

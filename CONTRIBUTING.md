@@ -63,6 +63,28 @@ git push origin v1.4.6
 gh release create v1.4.6 --title "v1.4.6 — faster first sound, a Download button that downloads, English always" --notes-file /tmp/auralis-v1.4.6-release-notes.md
 ```
 
+### v1.4.7 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.7 — a tap to listen actually listens**
+
+Why: v1.4.6 shipped (commit f437d79, Release live) and its real-browser check (Nov 16, 2:09–2:15 PM) found it improved but NOT fixed for Carl's core complaint. (1) Tapping "Listen to sample" showed "Getting the voice ready… 15%" immediately, but NO speech for 60 seconds — it ended at "Ready — press play to listen." and needed a SECOND tap on Play in the reader. Only then did speech start in 1–3s. That is Carl's "it didn't load at all". (2) No warm-up indicator was visible on page load — the background download line existed in the Voices section, below the fold. (3) Duplicate status messages for the third check in a row ("Ready…" ×2, preview ×2, reset note ×2). (4) The "Reset to English" note was truncated mid-sentence. (5) "The Quiet Work of City Trees" sample rendered with words mashed together. (6) Preview mispronounces the brand "Auralis" as "Orales". (7) The reader Stop button was covered by the sticky bottom player in some scroll positions.
+
+- **A Listen tap listens (the core fix):** sample cards ("Listen to sample") and "Try a sample" now auto-play — `openArticle` takes an `autoplay` option, and when the voice is ready playback starts by itself. No "Ready — press play to listen." parking, no second tap. Link opens, paste-text and deep links are unchanged (they still say "Ready — press play to listen." once). If the browser refuses the delayed `audio.play()` because the tap's gesture expired during a long model download, the player parks in a plain "▶ Tap to listen — voice is ready" state with no failure box, and the next tap starts at once (the voice is downloaded now).
+- **Warm-up is visible at the top of the page:** a new `#warmupBanner` in the hero mirrors the same label + % as the Voices load box from the moment the page loads ("Getting the voice ready… 15%", "The voice downloads once (~90MB) — about a minute on a slow connection, then it works offline."). It hides when the voice is ready.
+- **Status messages, once:** the toast is the only live region — the old code also mirrored every message into a separate `#srStatus` element, so text extraction saw each status twice. `#srStatus` is removed. The "Reset to English" note now lives only in the voice menu (`#voiceResetNote`); it is no longer also toasted. Long toasts wrap instead of truncating (`.toast` gets `white-space: normal`, centred, `overflow-wrap: break-word`).
+- **Sample text has spaces:** word spans in the reader now put the space between words as its own text node instead of a trailing space inside the word span — a trailing space inside an inline element is dropped by text/accessibility extraction, which is why the sample read as one mashed word.
+- **Preview no longer says the brand name:** the English preview sentence is now "Hello — I'm your reader. I can read any article aloud for you, in a voice that sounds almost human." Kokoro pronounced "Auralis" as "Orales"; rewording avoids the name entirely (other languages' previews are unchanged).
+- **Stop is always tappable:** the main player (`.player`) now has z-index 30, above the sticky bottom player (25), so the bottom player can no longer paint over the Stop button.
+- **Kept from v1.4.6:** English defaults, warm Play instant, Download button = versioned tag ZIP, double-tap-during-load guard, mismatch guard.
+- **Service worker:** cache bumped to `auralis-v1.4.7`. Footer shows `v1.4.7`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.7
+git push origin v1.4.7
+gh release create v1.4.7 --title "v1.4.7 — a tap to listen actually listens" --notes-file /tmp/auralis-v1.4.7-release-notes.md
+```
+
 ### v1.4.5 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.5 — caption pastes work from the link bar, block pages are never read aloud, another proxy leg**
