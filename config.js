@@ -26,11 +26,15 @@ window.AURALIS_CONFIG = {
   SHOW_SAMPLES: true,
 
   // Reader proxy fallbacks for fetching public pages.
-  // Order matters: direct fetch first, then Jina Reader, then AllOrigins.
-  // These are public, free, no-key services. If one is down, the next is tried.
+  // Order matters: direct fetch first, then Jina Reader, then
+  // AllOrigins, then Codetabs. These are public, free, no-key
+  // services. If one is down — or returns a block page instead of
+  // the article (v1.4.5: a proxy "success" carrying a Cloudflare
+  // 403 page counts as a failed leg) — the next is tried.
   FETCH_PROXIES: [
     { name: "Jina Reader", url: (u) => "https://r.jina.ai/" + u },
-    { name: "AllOrigins", url: (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) }
+    { name: "AllOrigins", url: (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) },
+    { name: "Codetabs", url: (u) => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u) }
   ],
 
   APP_NAME: "Auralis",

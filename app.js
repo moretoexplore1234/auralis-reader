@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.4";
+  var APP_VERSION = "v1.4.5";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -456,6 +456,28 @@
     if (BLOCKED_HINTS.some(function (re) { return re.test(hay); })) return "blocked";
     if (PAYWALL_HINTS.some(function (re) { return re.test(text || ""); })) return "paywall";
     return null;
+  }
+
+  // A block page is a page whose ONLY content is a bot/Cloudflare
+  // challenge or a 403 notice — never an article. Reader proxies
+  // return such pages with HTTP 200, so the fetch chain must
+  // recognise the text itself (v1.4.5): Jina returned the Cloudflare
+  // 403 page for Carl's Del Mar link and the app read it aloud as a
+  // 128-word "article", because the old length override ("40+ words
+  // means it's real") suppressed the block classification. These
+  // patterns are verbatim Jina/Cloudflare wording — a real article
+  // that merely mentions "captcha" in passing matches NONE of them,
+  // so the v1.4.4 visible-text rule stays intact for the weak hints
+  // above (those still get the length override).
+  var BLOCK_PAGE_PATTERNS = [
+    /returned error 403/i,                        // Jina: "Target URL returned error 403: Forbidden"
+    /this page (maybe|may be) requiring captcha/i, // Jina warning line
+    /why have i been blocked/i,                   // Cloudflare block page heading
+    /attention required!\s*\|\s*cloudflare/i      // Cloudflare challenge title ("Attention Required! | Cloudflare")
+  ];
+  function isBlockPageText(text) {
+    var t = String(text || "");
+    return BLOCK_PAGE_PATTERNS.some(function (re) { return re.test(t); });
   }
 
   // Paragraphs that are navigation / promo, never body text — even when
@@ -1078,6 +1100,13 @@
     (CFG.FETCH_PROXIES || []).forEach(function (p) {
       try { attempts.push({ name: p.name, url: p.url(url) }); } catch (e) { /* skip bad proxy config */ }
     });
+    // A proxy can "succeed" with a block page (HTTP 200 carrying a
+    // Cloudflare 403 notice) — that is a failed leg, not an article:
+    // the chain must advance so the next proxy gets its chance
+    // (v1.4.5). If every leg fails this way, the final error carries
+    // blockPage so the caller can say "blocked" instead of "couldn't
+    // reach" — the site refused, the network did not fail.
+    var sawBlockPage = false;
     var chain = Promise.reject(new Error("start"));
     attempts.forEach(function (a) {
       chain = chain.catch(function () {
@@ -1088,11 +1117,17 @@
           // the proxy itself). Used for the real destination after a
           // news.google.com redirect, and for "Open the original
           // link" after a fetch.
-          return resp.text().then(function (text) { return { via: a.name, text: text, finalUrl: a.name === "direct" ? (resp.url || null) : null }; });
+          return resp.text().then(function (text) {
+            if (isBlockPageText(text)) { sawBlockPage = true; throw new Error(a.name + " returned a block page"); }
+            return { via: a.name, text: text, finalUrl: a.name === "direct" ? (resp.url || null) : null };
+          });
         });
       });
     });
-    return chain;
+    return chain.catch(function (err) {
+      if (sawBlockPage) { try { err.blockPage = true; } catch (e) {} }
+      throw err;
+    });
   }
 
   // rawUrl may be a bare link, a caption with a link in it, or a
@@ -1155,7 +1190,7 @@
       });
       return;
     }
-    showStatus("", "Fetching the article…", "Trying the page directly, then a free public reader proxy if the site blocks cross-site reading. This usually takes a few seconds.");
+    showStatus("", "Fetching the article…", "Trying the page directly, then free public reader proxies if the site blocks cross-site reading. This usually takes a few seconds.");
     // Google share / news links never serve the article themselves:
     // resolve them to the real destination first (v1.4.4).
     resolveRedirectorUrl(url).then(function (resolved) {
@@ -1199,9 +1234,16 @@
       // genuine block page has no article text at all, so its
       // visible text is what carries the "verify you are human"
       // wording. And when real article text IS there (40+ words),
-      // a "blocked" hint is ignored outright.
+      // a WEAK "blocked" hint is ignored outright — but a block
+      // page stays a block page no matter how long it is (v1.4.5):
+      // Jina's Cloudflare 403 page is 128 words of "article", and
+      // the old length override let it through as readable content
+      // and the app read it aloud. The strong patterns
+      // (isBlockPageText) are verbatim Jina/Cloudflare wording, so
+      // they never fire on a real article.
       var blockKind = looksBlockedOrPaywalled(visible, extracted.title || "");
-      if (wordsOf(visible) >= 40 && blockKind === "blocked") blockKind = null;
+      if (isBlockPageText(visible) || isBlockPageText(extracted.title || "")) blockKind = "blocked";
+      else if (wordsOf(visible) >= 40 && blockKind === "blocked") blockKind = null;
       if (blockKind === "blocked") {
         errWithFallback("This page blocked the reader",
           "The site refused to share its text with a reader (bot protection or an access block). <strong>Auralis never tries to bypass blocks or paywalls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original page in your browser." : " You can open the original page in your browser, or copy the article text yourself and use <strong>Paste text</strong>."));
@@ -1229,6 +1271,14 @@
       if (parseXUrl(url)) {
         errWithFallback("Couldn't read that X post",
           "Every route failed (" + esc(err && err.message ? err.message : "network error") + "). The post may be deleted, protected, or from an account that limits readers. <strong>Auralis never bypasses login walls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original post in your browser." : " You can still copy the post text yourself and use <strong>Paste text</strong>, or open the original post in your browser."));
+        return;
+      }
+      // Every proxy leg returned a block page (v1.4.5): the site
+      // refused, the network did not fail — say "blocked", not
+      // "couldn't reach", and offer the same two ways forward.
+      if (err && err.blockPage) {
+        errWithFallback("This page blocked the reader",
+          "The site refused to share its text with a reader (bot protection or an access block). <strong>Auralis never tries to bypass blocks or paywalls.</strong>" + (hasFallback ? " Your pasted text is yours to read, though — hear that instead, or open the original page in your browser." : " You can open the original page in your browser, or copy the article text yourself and use <strong>Paste text</strong>."));
         return;
       }
       errWithFallback("Couldn't reach that page",

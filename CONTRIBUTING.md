@@ -40,6 +40,25 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.5 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.5 — caption pastes work from the link bar, block pages are never read aloud, another proxy leg**
+
+Why: v1.4.4 shipped (commit f05a7f0, Release live) and its real-browser check FAILED the core promise in three ways. (1) The link-bar input was `type="url"`, so the browser's own validation rejected a caption+link paste with "Please enter a URL." before the JS extractor ever ran — despite the page promising captions work. v1.4.4's jsdom QA missed it because a synthetic submit event bypasses native validation. (2) Paste Text fetched Carl's Del Mar link through Jina, which returned a Cloudflare 403 block page — and the app loaded it as a 128-word "article" and READ IT ALOUD. Two compounding causes: the length override ("40+ words means it's real") suppressed the block classification, and the fetch chain only advanced on fetch failure / non-OK status while Jina returns HTTP 200 with the block page, so AllOrigins was never tried. No "Open the original link" button existed because the blocked state was never reached. (3) Preview still showed no immediate loading state in the checker's views (though the preview line eventually played).
+
+- **Link bar accepts anything:** the input is now `type="text"` and the form has `novalidate`, so every paste reaches the extractor. QA now clicks the real Listen button and asserts `checkValidity()` differentials (old `type="url"` input rejects Carl's paste; new one accepts it).
+- **Block pages are detected, never read:** strong block-page patterns (`isBlockPageText` — verbatim Jina/Cloudflare wording: "returned error 403", "this page maybe requiring CAPTCHA", "Why have I been blocked?", "Attention Required! | Cloudflare") override the length check, and a proxy leg returning block-page text now counts as a failed leg, so the chain advances. The final error carries `blockPage`, so the catch path says "This page blocked the reader" instead of "Couldn't reach that page". Both fallback buttons ("Read what you pasted instead", "Open the original link") render in that state — verified in the DOM by QA. The weak "blocked" hints keep the 40-word override, and a real article that merely mentions "captcha" still loads — no reCAPTCHA false positive.
+- **Another proxy leg:** Codetabs joins Jina and AllOrigins (direct → Jina → AllOrigins → Codetabs). Verified by curl: for jettrealestate.com specifically, direct has no CORS headers, Jina returns the Cloudflare 403 markdown, and AllOrigins AND Codetabs both return HTTP 522 — the host blocks all public reader proxies, so the honest blocked state is the correct outcome there, and Auralis never bypasses a block. For other CORS-blocked-but-public pages the extra legs now actually get tried.
+- **Preview loading state (verified, not a regression):** the label IS set synchronously on tap before any await, and nothing re-renders the voice cards mid-load (`renderVoiceCards` only runs on voice selection / Edge-down UI) — the checker's view was most likely captured after the preview had already finished and the label restored. QA now asserts the label on the same tick and that the same button node still shows Loading 500ms later.
+- **Service worker:** cache bumped to `auralis-v1.4.5`. Footer shows `v1.4.5`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.5
+git push origin v1.4.5
+gh release create v1.4.5 --title "v1.4.5 — caption pastes work, block pages never read aloud" --notes-file /tmp/auralis-v1.4.5-release-notes.md
+```
+
 ### v1.4.3 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.3 — the WASM fallback actually runs now (root cause found in the library)**
