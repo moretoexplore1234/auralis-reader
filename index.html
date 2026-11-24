@@ -62,16 +62,16 @@
            in the Voices section, below the fold — a browser check
            saw no warm-up indicator on load at all. Mirrors the
            same label + % as the Voices load box (app.js
-           showKokoroLoading drives both). -->
+           showKittenLoading drives both). -->
       <div class="warmup-banner" id="warmupBanner" hidden>
         <div class="warmup-bar"><div class="warmup-fill" id="warmupFill"></div></div>
         <span id="warmupText">Getting the voice ready…</span>
-        <span class="muted warmup-note">The voice downloads once (~90MB) — about a minute on a slow connection, then it works offline.</span>
+        <span class="muted warmup-note">The voice downloads once (~60MB) — about a minute on a slow connection, then it works offline.</span>
       </div>
       <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
-        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.8.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
+        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.9.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
         <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
         <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
         <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
@@ -211,7 +211,7 @@
       </div>
       <div class="steps">
         <div class="step"><div class="step-num">01</div><h3>Paste a link</h3><p>Any public article or page. Auralis extracts the real article text and strips the nav, ads and clutter.</p></div>
-        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Free on-device voices (Kokoro — Heart, Sarah, Bella…) are free, built in and already the default — no key, no credits. In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the default instead. Add an ElevenLabs or Cartesia key later if you want a studio voice.</p></div>
+        <div class="step"><div class="step-num">02</div><h3>Pick a voice</h3><p>Free on-device voices (Kitten — Bella, Jasper, Luna…) are free, built in and already the default — no key, no credits. In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the default instead. Add an ElevenLabs or Cartesia key later if you want a studio voice.</p></div>
         <div class="step"><div class="step-num">03</div><h3>Listen &amp; ask</h3><p>Follow along with word highlighting, save it to your Library, or ask one of your AI apps to summarise it.</p></div>
       </div>
     </div>
@@ -229,7 +229,7 @@
             <tr><td>Article extraction (direct + public reader proxies)</td><td>Browser + Jina / AllOrigins</td><td>$0</td></tr>
             <tr><td>Library &amp; settings</td><td>Your browser (localStorage)</td><td>$0</td></tr>
             <tr><td>Microsoft AI voices (Edge Read Aloud) — in Microsoft Edge</td><td>Microsoft</td><td>$0 · unlimited, no key</td></tr>
-            <tr><td>Kokoro on-device voices — every other browser (model from Hugging Face, downloaded once)</td><td>Your device</td><td>$0 · unlimited, no key</td></tr>
+            <tr><td>Kitten on-device voices — every other browser (model from Hugging Face, downloaded once)</td><td>Your device</td><td>$0 · unlimited, no key</td></tr>
             <tr><td>ElevenLabs (10k chars/mo) / Cartesia (20k credits/mo)</td><td>Optional, your free key</td><td>$0 on the free tier</td></tr>
             <tr><td>OpenAI / Azure / Google Cloud voices</td><td>Optional, your key</td><td>Pay provider only</td></tr>
           </tbody>
@@ -276,7 +276,7 @@
             <li>Unzip the folder it downloads.</li>
             <li>Double-click <strong>index.html</strong> — Auralis opens in your browser.</li>
           </ol>
-          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.8.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
+          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.4.9.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
           <p class="muted" style="margin-top:10px">Every version, with notes: <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">GitHub Releases</a> · Source code: <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">github.com/moretoexplore1234/auralis-reader</a></p>
         </div>
       </div>
@@ -305,7 +305,7 @@
         <h2>Free AI voices now. Studio voices if you want them.</h2>
         <p>Free voices run on your device — free forever, no credits, no account (model from Hugging Face, downloaded once). In Microsoft Edge, the Microsoft AI voices (Aria, Jenny, Guy…) are the free default instead. Premium voices are an optional upgrade, using a key you paste yourself. <strong>Keys are stored only in this browser's localStorage and sent only to the provider you chose.</strong></p>
         <div class="tier-strip" aria-label="Voice tiers">
-          <span class="tier-chip tier-free">★ Unlimited &amp; free — on-device Kokoro voices (Microsoft AI voices in Edge), no key</span>
+          <span class="tier-chip tier-free">★ Unlimited &amp; free — on-device Kitten voices (Microsoft AI voices in Edge), no key</span>
           <span class="tier-chip">Free monthly credits — ElevenLabs 10k/mo · Cartesia 20k/mo</span>
           <span class="tier-chip">Your key, pay your provider — OpenAI · Azure · Google Cloud</span>
         </div>
@@ -314,14 +314,14 @@
       <div class="voice-picker">
         <div class="voice-warn edge-down-banner" id="edgeDownBanner" hidden>
           <strong>Microsoft voices aren't answering in Microsoft Edge.</strong>
-          <p>You're hearing the free on-device Kokoro voices instead — same human-sounding quality, still free. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs or Cartesia key below for studio voices.</p>
+          <p>You're hearing the free on-device Kitten voices instead — same human-sounding quality, still free. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs or Cartesia key below for studio voices.</p>
           <button class="btn btn-gold btn-small" type="button" id="edgeRetryBtn">↻ Retry Microsoft voices</button>
         </div>
-        <div class="kokoro-load" id="kokoroLoadBox" hidden>
-          <div class="kokoro-load-bar"><div class="kokoro-load-fill" id="kokoroLoadFill"></div></div>
-          <span id="kokoroLoadText">Loading the on-device voices…</span>
+        <div class="kitten-load" id="kittenLoadBox" hidden>
+          <div class="kitten-load-bar"><div class="kitten-load-fill" id="kittenLoadFill"></div></div>
+          <span id="kittenLoadText">Loading the on-device voices…</span>
         </div>
-        <p class="muted">Free voices: <strong>Kokoro</strong> — runs on your device, free forever, no credits, no account (model from Hugging Face, downloaded once, ~90MB, then works offline). In Microsoft Edge, the free voices are Microsoft's (Aria, Jenny, Guy…).</p>
+        <p class="muted">Free voices: <strong>Kitten</strong> — runs on your device, free forever, no credits, no account (model from Hugging Face, downloaded once, ~60MB, then works offline). In Microsoft Edge, the free voices are Microsoft's (Aria, Jenny, Guy…).</p>
         <div class="voice-lang-row">
           <label for="voiceLangSelect">Language</label>
           <select id="voiceLangSelect" aria-label="Voice language">
@@ -464,7 +464,7 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.8</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.4.9</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
       <a href="#library">Library</a>

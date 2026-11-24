@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.8";
+  var APP_VERSION = "v1.4.9";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -155,13 +155,13 @@
     engine: "browser",     // "browser" | "free" | "premium"
     premiumAudio: null,
     premiumTimer: null,
-    freeAudio: null,       // Audio element for the free AI engine (Edge or Kokoro)
+    freeAudio: null,       // Audio element for the free AI engine (Edge or Kitten)
     freeTimer: null,
-    freeTransport: null,   // "edge" | "kokoro" — decided on first play, per session
+    freeTransport: null,   // "edge" | "kitten" — decided on first play, per session
     edgeFailed: false,
-    edgeDown: false,       // Microsoft voices proven unavailable in this browser — Kokoro is the free engine instead
+    edgeDown: false,       // Microsoft voices proven unavailable in this browser — Kitten is the free engine instead
     edgeProbed: false,     // the on-load Edge handshake probe has run once (Edge browsers only)
-    kokoroFailed: false,   // the on-device Kokoro model could not be loaded
+    kittenFailed: false,   // the on-device Kitten model could not be loaded
     warmingUp: false,      // v1.4.6: background model warm-up in flight (page load, not first Play)
     prefetchAudio: null,   // v1.4.6: first sentence's audio, synthesized at article load
     prefetchKey: null,     // v1.4.6: title + first sentence the prefetch belongs to
@@ -1373,7 +1373,7 @@
    * no descriptions was impossible to choose from. Only curated AI
    * voices appear. Which free engine plays depends on the browser:
    * real Microsoft Edge gets the Microsoft Edge Read Aloud voices
-   * (free, no key); every other browser gets Kokoro on-device voices
+   * (free, no key); every other browser gets Kitten on-device voices
    * (free, no key, no credits — model from Hugging Face). There is
    * NO robotic fallback anywhere in the app: no Google Translate
    * TTS, no device voices, nothing. If no human-sounding engine can
@@ -1381,8 +1381,8 @@
    * Language first, then a small decisive subset per language —
    * never all languages mixed, never 300 voices. Every Microsoft
    * voice name below was verified against Microsoft's live voice
-   * list (Nov 10, 2026); every Kokoro voice ID was verified against
-   * the model's voice list on Hugging Face (Nov 13, 2026). Each
+   * list (Nov 10, 2026); every Kitten voice ID was verified against
+   * the model's voice list (Nov 24, 2026). Each
    * entry: voice id, label, plain-language description with a
    * "Best for:" line, accent tag, gender, use-case tag. */
   var VOICE_LANGUAGES = [
@@ -1456,11 +1456,13 @@
   var ALL_EDGE_VOICES = [];
   VOICE_LANGUAGES.forEach(function (l) { l.voices.forEach(function (v) { ALL_EDGE_VOICES.push(v); }); });
 
-  /* ---------------- Kokoro: the free on-device AI voices ----------------
-   * Kokoro-82M (Apache-2.0) runs 100% in the browser via kokoro-js +
-   * onnxruntime-web (WebGPU with WASM fallback). The model comes from
-   * Hugging Face (onnx-community/Kokoro-82M-v1.0-ONNX) and is
-   * downloaded ONCE (~90MB, q8) on first play, then works offline.
+  /* ---------------- Kitten: the free on-device AI voices ----------------
+   * KittenTTS Nano 0.8 (Apache-2.0, StyleTTS2, 15M params) runs 100%
+   * in the browser via kitten-tts-js + onnxruntime-web (WASM only —
+   * kitten-tts-js 0.1.2 has no WebGPU mode). The model comes from
+   * Hugging Face (KittenML/kitten-tts-nano-0.8 — the same weights as
+   * onnx-community/KittenTTS-Nano-v0.8-ONNX) and is downloaded ONCE
+   * (~60MB: model + voices.npz) on first play, then works offline.
    * No key, no account, no credits, no usage limit, nothing uploaded.
    * This is the free engine in every browser EXCEPT real Microsoft
    * Edge, where the Microsoft voices work and stay the default.
@@ -1469,77 +1471,41 @@
    * cannot set the User-Agent header on a WebSocket. Only a real
    * Edge browser (or an extension) can pass that check, so in Chrome
    * and every other browser the Edge transport is never even tried.
-   * Every voice ID below was verified against the model's voice list
-   * on Hugging Face (Nov 13, 2026). Kokoro has no German, Hebrew or
-   * Arabic voices — those languages show an honest empty state in
-   * non-Edge browsers (studio voices via a free key still work). */
-  var KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
-  var KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
-  // Alternate kokoro-js entry (esm.sh) — a DIFFERENT module graph
-  // from jsDelivr, so its transformers.js instance is a different
-  // object. Used ONLY for the retry after a failed WebGPU load (see
-  // ensureKokoro): transformers.js 3.5.1 caches a failed first
-  // session creation in a module-level `wasmInitPromise` that is
-  // never reset, so a same-graph WASM retry re-throws the original
-  // WebGPU error without ever trying WASM — that is exactly what
-  // v1.4.0–v1.4.2 did in headless Chrome. The alt graph has fresh
-  // module state, so the retry actually runs. Verified Nov 13, 2026:
-  // esm.sh serves kokoro-js 1.2.1 with CORS `*` and re-exports
-  // KokoroTTS; its transformers import resolves under esm.sh.
-  var KOKORO_CDN_ALT = "https://esm.sh/kokoro-js@1.2.1";
-  // The transformers.js module kokoro-js itself imports (same
-  // jsDelivr URL, so the same module instance): used only to set the
-  // WASM thread count before a WASM load (see configureWasmEnv).
-  var TRANSFORMERS_CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
-  // Same, for the esm.sh module graph (KOKORO_CDN_ALT above).
-  var TRANSFORMERS_CDN_ALT = "https://esm.sh/@huggingface/transformers@3.5.1";
-  var DEFAULT_KOKORO_VOICE = "af_heart";
-  var KOKORO_VOICES = {
+   * English ONLY — KittenTTS Nano is an English-only model with 8
+   * US voices, so every non-English language shows an honest empty
+   * state in non-Edge browsers (studio voices via a free key, or
+   * Microsoft voices in real Edge, still work). Proven Nov 24,
+   * 2026: a local generate + faster-whisper transcript of the
+   * Bella sample came back word-perfect. */
+  var KITTEN_MODEL = "KittenML/kitten-tts-nano-0.8";
+  var KITTEN_CDN = "https://cdn.jsdelivr.net/npm/kitten-tts-js@0.1.2/+esm";
+  // Alternate kitten-tts-js entry (esm.sh) — used ONLY if the
+  // jsDelivr import itself fails (see ensureKitten). A failed model
+  // load is NOT retried on the alt graph: kitten-tts-js has no
+  // poisoned-module-state problem (it does not use transformers.js),
+  // so a retry on the same graph is a real retry.
+  var KITTEN_CDN_ALT = "https://esm.sh/kitten-tts-js@0.1.2";
+  // The onnxruntime-web module kitten-tts-js itself imports
+  // (verified against the kitten-tts-js 0.1.2 +esm bundle, Nov 24,
+  // 2026: its from_pretrained() imports
+  // "/npm/onnxruntime-web@1.24.2/+esm"). The app imports this exact
+  // URL first and sets wasmPaths on it, so the setting lands on the
+  // SAME module instance kitten-tts-js will use (see
+  // configureOnnxWasmPaths). The .wasm files live in
+  // onnxruntime-web's dist/, NOT next to kitten-tts-js.
+  var ONNX_RUNTIME_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/+esm";
+  var ONNX_RUNTIME_WASM_PATHS = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/";
+  var DEFAULT_KITTEN_VOICE = "Bella";
+  var KITTEN_VOICES = {
     en: [
-      { name: "af_heart", label: "Kokoro Heart", desc: "Warm, expressive American woman — Kokoro's best-rated voice. Best for: articles and audiobooks.", accent: "US", gender: "Female", use: "Articles", recommended: true },
-      { name: "af_sarah", label: "Kokoro Sarah", desc: "Bright, clear American woman. Best for: news and short articles.", accent: "US", gender: "Female", use: "News" },
-      { name: "af_bella", label: "Kokoro Bella", desc: "Smooth, gentle American woman. Best for: stories and long reads.", accent: "US", gender: "Female", use: "Stories" },
-      { name: "am_adam", label: "Kokoro Adam", desc: "Deep, steady American man. Best for: narration and long articles.", accent: "US", gender: "Male", use: "Articles" },
-      { name: "am_michael", label: "Kokoro Michael", desc: "Warm, conversational American man. Best for: articles and narration.", accent: "US", gender: "Male", use: "Articles" },
-      { name: "am_onyx", label: "Kokoro Onyx", desc: "Calm, deep American man. Best for: audiobooks and long reads.", accent: "US", gender: "Male", use: "Audiobooks" },
-      { name: "bf_emma", label: "Kokoro Emma", desc: "Clear, friendly British woman. Best for: articles and news.", accent: "UK", gender: "Female", use: "Articles" },
-      { name: "bm_george", label: "Kokoro George", desc: "Steady, warm British man. Best for: news and narration.", accent: "UK", gender: "Male", use: "News" }
-    ],
-    es: [
-      { name: "ef_dora", label: "Kokoro Dora", desc: "Warm, clear Spanish woman. Best for: articles.", accent: "Spain", gender: "Female", use: "Articles" },
-      { name: "em_alex", label: "Kokoro Alex", desc: "Calm, steady Spanish man. Best for: articles.", accent: "Spain", gender: "Male", use: "Articles" },
-      { name: "em_santa", label: "Kokoro Santa", desc: "Warm, friendly Spanish man. Best for: stories.", accent: "Spain", gender: "Male", use: "Stories" }
-    ],
-    fr: [
-      { name: "ff_siwis", label: "Kokoro Siwis", desc: "Warm, clear French woman. Best for: articles.", accent: "France", gender: "Female", use: "Articles" }
-    ],
-    hi: [
-      { name: "hf_alpha", label: "Kokoro Alpha", desc: "Warm, clear Hindi woman. Best for: articles.", accent: "India", gender: "Female", use: "Articles" },
-      { name: "hf_beta", label: "Kokoro Beta", desc: "Bright, friendly Hindi woman. Best for: stories.", accent: "India", gender: "Female", use: "Stories" },
-      { name: "hm_omega", label: "Kokoro Omega", desc: "Calm, steady Hindi man. Best for: articles.", accent: "India", gender: "Male", use: "Articles" },
-      { name: "hm_psi", label: "Kokoro Psi", desc: "Warm, clear Hindi man. Best for: stories.", accent: "India", gender: "Male", use: "Stories" }
-    ],
-    it: [
-      { name: "if_sara", label: "Kokoro Sara", desc: "Warm, clear Italian woman. Best for: articles.", accent: "Italy", gender: "Female", use: "Articles" },
-      { name: "im_nicola", label: "Kokoro Nicola", desc: "Calm, steady Italian man. Best for: articles.", accent: "Italy", gender: "Male", use: "Articles" }
-    ],
-    ja: [
-      { name: "jf_alpha", label: "Kokoro Alpha", desc: "Warm, clear Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
-      { name: "jf_gongitsune", label: "Kokoro Gongitsune", desc: "Bright, friendly Japanese woman. Best for: stories.", accent: "Japan", gender: "Female", use: "Stories" },
-      { name: "jf_nezumi", label: "Kokoro Nezumi", desc: "Clear, gentle Japanese woman. Best for: stories.", accent: "Japan", gender: "Female", use: "Stories" },
-      { name: "jf_tebukuro", label: "Kokoro Tebukuro", desc: "Warm Japanese woman. Best for: articles.", accent: "Japan", gender: "Female", use: "Articles" },
-      { name: "jm_kumo", label: "Kokoro Kumo", desc: "Calm, steady Japanese man. Best for: articles.", accent: "Japan", gender: "Male", use: "Articles" }
-    ],
-    pt: [
-      { name: "pf_dora", label: "Kokoro Dora", desc: "Warm, clear Brazilian woman. Best for: articles.", accent: "Brazil", gender: "Female", use: "Articles" },
-      { name: "pm_alex", label: "Kokoro Alex", desc: "Calm, steady Brazilian man. Best for: articles.", accent: "Brazil", gender: "Male", use: "Articles" },
-      { name: "pm_santa", label: "Kokoro Santa", desc: "Warm, friendly Brazilian man. Best for: stories.", accent: "Brazil", gender: "Male", use: "Stories" }
-    ],
-    zh: [
-      { name: "zf_xiaobei", label: "Kokoro Xiaobei", desc: "Warm, clear Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
-      { name: "zf_xiaoni", label: "Kokoro Xiaoni", desc: "Bright, friendly Mandarin woman. Best for: stories.", accent: "China", gender: "Female", use: "Stories" },
-      { name: "zf_xiaoxiao", label: "Kokoro Xiaoxiao", desc: "Clear, gentle Mandarin woman. Best for: articles.", accent: "China", gender: "Female", use: "Articles" },
-      { name: "zf_xiaoyi", label: "Kokoro Xiaoyi", desc: "Warm Mandarin woman. Best for: news.", accent: "China", gender: "Female", use: "News" }
+      { name: "Bella", label: "Kitten Bella", desc: "Warm, expressive American woman — Kitten's best-rated voice. Best for: articles and audiobooks.", accent: "US", gender: "Female", use: "Articles", recommended: true },
+      { name: "Jasper", label: "Kitten Jasper", desc: "Deep, steady American man. Best for: narration and long articles.", accent: "US", gender: "Male", use: "Articles" },
+      { name: "Luna", label: "Kitten Luna", desc: "Bright, clear American woman. Best for: news and short articles.", accent: "US", gender: "Female", use: "News" },
+      { name: "Bruno", label: "Kitten Bruno", desc: "Warm, conversational American man. Best for: articles and narration.", accent: "US", gender: "Male", use: "Articles" },
+      { name: "Rosie", label: "Kitten Rosie", desc: "Smooth, gentle American woman. Best for: stories and long reads.", accent: "US", gender: "Female", use: "Stories" },
+      { name: "Hugo", label: "Kitten Hugo", desc: "Calm, deep American man. Best for: audiobooks and long reads.", accent: "US", gender: "Male", use: "Audiobooks" },
+      { name: "Kiki", label: "Kitten Kiki", desc: "Clear, friendly American woman. Best for: articles and news.", accent: "US", gender: "Female", use: "Articles" },
+      { name: "Leo", label: "Kitten Leo", desc: "Steady, warm American man. Best for: news and narration.", accent: "US", gender: "Male", use: "News" }
     ]
   };
   function isEdgeBrowser() {
@@ -1547,38 +1513,32 @@
   }
   // The free voices for the current language, from the engine that can
   // actually play in this browser: Microsoft in real Edge (unless the
-  // Edge handshake already failed — then Kokoro), Kokoro everywhere else.
+  // Edge handshake already failed — then Kitten), Kitten everywhere else.
   function freeVoiceList() {
     var lang = currentLanguage();
     if (isEdgeBrowser() && !state.edgeDown) {
       return { engine: "edge", voices: languageEntry(lang).voices };
     }
-    return { engine: "kokoro", voices: KOKORO_VOICES[lang] || [] };
+    return { engine: "kitten", voices: KITTEN_VOICES[lang] || [] };
   }
-  function kokoroVoiceByName(n) {
+  function kittenVoiceByName(n) {
     var found = null;
-    Object.keys(KOKORO_VOICES).forEach(function (code) {
-      KOKORO_VOICES[code].forEach(function (v) { if (v.name === n) found = v; });
+    Object.keys(KITTEN_VOICES).forEach(function (code) {
+      KITTEN_VOICES[code].forEach(function (v) { if (v.name === n) found = v; });
     });
-    return found || KOKORO_VOICES.en[0];
+    return found || KITTEN_VOICES.en[0];
   }
-  // v1.4.6: which language a Kokoro voice speaks, by its ID. The
-  // voice ID is the ground truth — labels are NOT unique across
-  // languages ("Kokoro Alpha" is both Hindi hf_alpha and Japanese
-  // jf_alpha; "Kokoro Dora" is both Spanish and Portuguese), so a
-  // label alone can never identify a voice.
-  function kokoroLangOf(name) {
-    var found = null;
-    Object.keys(KOKORO_VOICES).forEach(function (code) {
-      KOKORO_VOICES[code].forEach(function (v) { if (v.name === name) found = code; });
-    });
-    return found;
-  }
-  // Any free voice ID (Kokoro or Microsoft) -> its language code, or null.
+  // v1.4.9: Kitten is English-only — every Kitten voice speaks
+  // English. Any free voice ID (Kitten or Microsoft) -> its
+  // language code, or null. (A stale saved Kokoro voice ID from
+  // v1.4.8 or earlier matches nothing here, so it returns null and
+  // the reset path below falls back to Kitten Bella.)
   function voiceLangOf(name) {
-    var k = kokoroLangOf(name);
-    if (k) return k;
     var found = null;
+    Object.keys(KITTEN_VOICES).forEach(function (code) {
+      KITTEN_VOICES[code].forEach(function (v) { if (v.name === name) found = code; });
+    });
+    if (found) return found;
     VOICE_LANGUAGES.forEach(function (l) {
       l.voices.forEach(function (v) { if (v.name === name) found = l.code; });
     });
@@ -1587,8 +1547,8 @@
   function freeVoiceLabel(choice) {
     if (!choice) choice = currentVoiceChoice();
     if (choice.engine === "edge") return edgeVoiceByName(choice.edgeVoice).label;
-    if (choice.engine === "kokoro" && choice.kokoroVoice) return kokoroVoiceByName(choice.kokoroVoice).label;
-    return "Kokoro Heart";
+    if (choice.engine === "kitten" && choice.kittenVoice) return kittenVoiceByName(choice.kittenVoice).label;
+    return "Kitten Bella";
   }
   function languageEntry(code) {
     var found = null;
@@ -1650,7 +1610,7 @@
     return "latin";
   }
   // v1.4.6: refuse to play garbage instead of playing it. A
-  // non-English Kokoro voice reading English text applies that
+  // non-English Kitten voice reading English text applies that
   // language's phonetics to English letters — it comes out as
   // random foreign-sounding noise, which is exactly what Carl
   // reported on Nov 16. Same the other way: an English voice
@@ -1685,20 +1645,20 @@
     return parts.length >= 2 ? parts[0] + "-" + parts[1] : "en-US";
   }
   function currentEdgeVoice() { return (currentVoiceChoice().edgeVoice || DEFAULT_EDGE_VOICE); }
-  function currentKokoroVoice() { return (currentVoiceChoice().kokoroVoice || DEFAULT_KOKORO_VOICE); }
+  function currentKittenVoice() { return (currentVoiceChoice().kittenVoice || DEFAULT_KITTEN_VOICE); }
   // The visitor's free voice choice: which engine can play here, and
   // which voice in it. In real Edge the default is Microsoft Aria;
-  // everywhere else it is Kokoro Heart (on-device, free, no key).
+  // everywhere else it is Kitten Bella (on-device, free, no key).
   // "google" and "browser" are legacy values saved by older versions:
   // both migrate to the free default for this browser.
   function currentVoiceChoice() {
     var saved = storeGet(LS.voice, {}) || {};
     if (isEdgeBrowser() && !state.edgeDown) {
-      return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, kokoroVoice: "", browserName: "", lang: currentLanguage() };
+      return { engine: "edge", edgeVoice: saved.edgeVoice || DEFAULT_EDGE_VOICE, kittenVoice: "", browserName: "", lang: currentLanguage() };
     }
     var lang = currentLanguage();
-    var list = KOKORO_VOICES[lang] || [];
-    var kv = saved.kokoroVoice || DEFAULT_KOKORO_VOICE;
+    var list = KITTEN_VOICES[lang] || [];
+    var kv = saved.kittenVoice || DEFAULT_KITTEN_VOICE;
     var ok = false;
     list.forEach(function (v) { if (v.name === kv) ok = true; });
     if (!ok) {
@@ -1714,7 +1674,7 @@
       kv = list.length ? list[0].name : "";
       ok = true;
     }
-    return { engine: "kokoro", edgeVoice: "", kokoroVoice: ok ? kv : (list.length ? list[0].name : ""), browserName: "", lang: lang };
+    return { engine: "kitten", edgeVoice: "", kittenVoice: ok ? kv : (list.length ? list[0].name : ""), browserName: "", lang: lang };
   }
   // v1.4.6: the site is English-first, ALWAYS. A stale saved
   // non-English language or voice from an earlier visit is reset
@@ -1729,9 +1689,9 @@
     var saved = storeGet(LS.voice, {}) || {};
     var changed = false;
     if (saved.lang && saved.lang !== "en") { saved.lang = "en"; changed = true; }
-    if (saved.kokoroVoice) {
-      var vlang = kokoroLangOf(saved.kokoroVoice);
-      if (!vlang || vlang !== "en") { saved.kokoroVoice = DEFAULT_KOKORO_VOICE; changed = true; }
+    if (saved.kittenVoice) {
+      var vlang = voiceLangOf(saved.kittenVoice);
+      if (!vlang || vlang !== "en") { saved.kittenVoice = DEFAULT_KITTEN_VOICE; changed = true; }
     }
     if (saved.edgeVoice) {
       var elang = voiceLangOf(saved.edgeVoice);
@@ -1743,7 +1703,7 @@
   // The voice picker: language-first, curated cards only.
   // No browser/device voice is ever listed or used, and there is no
   // Google voice anywhere — the free engine is Microsoft (real Edge)
-  // or Kokoro on-device (everywhere else). Every option here is a
+  // or Kitten on-device (everywhere else). Every option here is a
   // human-sounding AI voice.
   function renderReaderVoiceSelect() {
     var sel = $("voiceSelect"); if (!sel) return;
@@ -1751,7 +1711,7 @@
     var free = freeVoiceList();
     sel.innerHTML = "";
     var g1 = document.createElement("optgroup");
-    g1.label = (free.engine === "edge" ? "Microsoft AI voices — free, no key" : "Kokoro AI voices — free, on your device") + " · " + languageEntry(currentLanguage()).label;
+    g1.label = (free.engine === "edge" ? "Microsoft AI voices — free, no key" : "Kitten AI voices — free, on your device") + " · " + languageEntry(currentLanguage()).label;
     if (!free.voices.length) {
       var none = el("option", null, "No free on-device voice for this language yet — add a free key below");
       none.disabled = true;
@@ -1760,7 +1720,7 @@
     free.voices.forEach(function (ev) {
       var opt = el("option", null, ev.label + " — " + ev.desc);
       opt.value = free.engine + ":" + ev.name;
-      if (choice.engine === free.engine && (free.engine === "edge" ? choice.edgeVoice === ev.name : choice.kokoroVoice === ev.name)) opt.selected = true;
+      if (choice.engine === free.engine && (free.engine === "edge" ? choice.edgeVoice === ev.name : choice.kittenVoice === ev.name)) opt.selected = true;
       g1.appendChild(opt);
     });
     sel.appendChild(g1);
@@ -1775,9 +1735,9 @@
     if (!sel.value && free.voices.length) sel.value = free.engine + ":" + free.voices[0].name;
   }
   function voiceCard(entry, engine) {
-    var card = el("div", "voice-card " + (engine === "edge" ? "edge-voice" : "kokoro-voice"));
+    var card = el("div", "voice-card " + (engine === "edge" ? "edge-voice" : "kitten-voice"));
     var choice = currentVoiceChoice();
-    var selected = choice.engine === engine && (engine === "edge" ? choice.edgeVoice === entry.name : choice.kokoroVoice === entry.name);
+    var selected = choice.engine === engine && (engine === "edge" ? choice.edgeVoice === entry.name : choice.kittenVoice === entry.name);
     var unavailable = engine === "edge" && !!state.edgeDown;
     if (selected) card.classList.add("selected");
     if (unavailable) {
@@ -1825,7 +1785,7 @@
     var sel = $("voiceLangSelect");
     if (sel && sel.value !== currentLanguage()) sel.value = currentLanguage();
     if (!free.voices.length) {
-      var note = el("p", "muted", "No free on-device voice for this language yet — Kokoro has no voices for it. Add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.");
+      var note = el("p", "muted", "No free on-device voice for this language yet — Kitten is English-only. Add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.");
       wrap.appendChild(note);
       return;
     }
@@ -1834,15 +1794,15 @@
   function updateVoiceEmptyState() {
     var box = $("voiceEmptyState"); if (!box) return;
     var free = freeVoiceList();
-    box.hidden = !(free.voices.length === 0 || state.kokoroFailed || (isEdgeBrowser() && state.edgeDown && state.kokoroFailed));
+    box.hidden = !(free.voices.length === 0 || state.kittenFailed || (isEdgeBrowser() && state.edgeDown && state.kittenFailed));
   }
   // Microsoft voices in real Edge only. If the Edge handshake fails
-  // there, the free engine switches to the on-device Kokoro voices —
+  // there, the free engine switches to the on-device Kitten voices —
   // still human-sounding, still free — and the banner says so. There
   // is no Google voice anywhere in this app anymore: Google Translate
   // TTS was removed entirely in v1.4.0 because its one flat voice
   // per language is what made every voice sound the same.
-  var EDGE_DOWN_MSG = "Microsoft voices aren't answering in Microsoft Edge — you're hearing the free on-device Kokoro voices instead. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs/Cartesia key below for studio voices.";
+  var EDGE_DOWN_MSG = "Microsoft voices aren't answering in Microsoft Edge — you're hearing the free on-device Kitten voices instead. Tap “Retry Microsoft voices” to try again, or add a free ElevenLabs/Cartesia key below for studio voices.";
   function edgeDownToast() { toast(EDGE_DOWN_MSG); }
   function markEdgeDown() {
     state.edgeDown = true;
@@ -1855,8 +1815,8 @@
     var banner = $("edgeDownBanner");
     if (banner) banner.hidden = !state.edgeDown;
     // Re-render the voice UI: in real Edge with Edge down, the free
-    // list switches to Kokoro (freeVoiceList), so the cards are
-    // rebuilt as Kokoro cards; the reader dropdown follows.
+    // list switches to Kitten (freeVoiceList), so the cards are
+    // rebuilt as Kitten cards; the reader dropdown follows.
     renderReaderVoiceSelect();
     renderVoiceCards();
     updateVoiceEmptyState();
@@ -1868,12 +1828,12 @@
   // (403 unless the User-Agent contains "Edg/", which a web page
   // cannot set), so probing there would only ever produce a scary
   // error banner for something that was never going to work. In
-  // non-Edge browsers the free engine is Kokoro from the start and
+  // non-Edge browsers the free engine is Kitten from the start and
   // there is nothing to probe.
   function probeEdgeTransport() {
     if (state.edgeProbed) return;
     state.edgeProbed = true;
-    if (!isEdgeBrowser()) return; // Kokoro is the free engine here — no probe, no banner
+    if (!isEdgeBrowser()) return; // Kitten is the free engine here — no probe, no banner
     if (typeof WebSocket === "undefined") { markEdgeDown(); return; }
     edgeConnect().then(function () {
       state.edgeFailed = false;
@@ -1892,22 +1852,22 @@
     // old one here — the old code therefore kept the old voice, so
     // picking Spanish left the English voice selected with no card
     // marked as selected (reproduced Nov 16 in jsdom: after picking
-    // Spanish, the voice was still af_heart).
+    // Spanish, the voice was still Bella).
     var list;
     if (isEdgeBrowser() && !state.edgeDown) list = languageEntry(code).voices;
-    else list = KOKORO_VOICES[code] || [];
+    else list = KITTEN_VOICES[code] || [];
     if (isEdgeBrowser() && !state.edgeDown) {
       var ok = false;
       list.forEach(function (v) { if (v.name === cur.edgeVoice) ok = true; });
       if (!ok) cur.edgeVoice = list.length ? list[0].name : DEFAULT_EDGE_VOICE;
     } else {
       var okK = false;
-      list.forEach(function (v) { if (v.name === cur.kokoroVoice) okK = true; });
-      if (!okK) cur.kokoroVoice = list.length ? list[0].name : DEFAULT_KOKORO_VOICE;
+      list.forEach(function (v) { if (v.name === cur.kittenVoice) okK = true; });
+      if (!okK) cur.kittenVoice = list.length ? list[0].name : DEFAULT_KITTEN_VOICE;
     }
     storeSet(LS.voice, cur);
     state.freeTransport = null;
-    state.edgeFailed = false; state.kokoroFailed = false;
+    state.edgeFailed = false; state.kittenFailed = false;
     // v1.4.6: say the change out loud. Before this the language
     // switched silently, and a visitor who tapped the dropdown while
     // exploring could end up with every article read in Japanese
@@ -1920,14 +1880,14 @@
     var cur = storeGet(LS.voice, {}) || {};
     cur.engine = engine;
     if (engine === "edge") cur.edgeVoice = voiceId || DEFAULT_EDGE_VOICE;
-    else cur.kokoroVoice = voiceId || DEFAULT_KOKORO_VOICE;
+    else cur.kittenVoice = voiceId || DEFAULT_KITTEN_VOICE;
     cur.name = "";
     cur.lang = currentLanguage();
     storeSet(LS.voice, cur);
     state.freeTransport = null; // re-decide the free transport for the new voice
     state.edgeFailed = false;
     loadVoices();
-    toast("Voice set to " + freeVoiceLabel({ engine: engine, edgeVoice: cur.edgeVoice, kokoroVoice: cur.kokoroVoice }) + " (free).");
+    toast("Voice set to " + freeVoiceLabel({ engine: engine, edgeVoice: cur.edgeVoice, kittenVoice: cur.kittenVoice }) + " (free).");
   }
   function persistVoiceChoice() {
     var sel = $("voiceSelect");
@@ -1940,10 +1900,10 @@
     }
     var cur = storeGet(LS.voice, {}) || {};
     var prev = currentVoiceChoice();
-    cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.kokoroVoice = DEFAULT_KOKORO_VOICE; cur.name = "";
+    cur.engine = "edge"; cur.edgeVoice = DEFAULT_EDGE_VOICE; cur.kittenVoice = DEFAULT_KITTEN_VOICE; cur.name = "";
     if (val.indexOf("edge:") === 0) { cur.engine = "edge"; cur.edgeVoice = val.slice(5); }
-    else if (val.indexOf("kokoro:") === 0) { cur.engine = "kokoro"; cur.kokoroVoice = val.slice(7); }
-    else if (val.indexOf("premium:") === 0) { cur.engine = prev.engine; cur.edgeVoice = prev.edgeVoice; cur.kokoroVoice = prev.kokoroVoice; }
+    else if (val.indexOf("kitten:") === 0) { cur.engine = "kitten"; cur.kittenVoice = val.slice(7); }
+    else if (val.indexOf("premium:") === 0) { cur.engine = prev.engine; cur.edgeVoice = prev.edgeVoice; cur.kittenVoice = prev.kittenVoice; }
     cur.lang = currentLanguage();
     var r = $("rateRange"), p = $("pitchRange");
     cur.rate = r ? parseFloat(r.value) : 1; cur.pitch = p ? parseFloat(p.value) : 1;
@@ -1953,17 +1913,17 @@
     renderVoiceCards();
   }
 
-  /* ---------------- playback: free AI voices (Microsoft Edge in Edge, Kokoro everywhere else) ----------------
+  /* ---------------- playback: free AI voices (Microsoft Edge in Edge, Kitten everywhere else) ----------------
    * No key, no account, no credits. In real Microsoft Edge the free
    * engine is Microsoft Edge Read Aloud (Aria, Jenny, Guy…) from
    * speech.platform.bing.com. In every other browser the free engine
-   * is Kokoro, running 100% on the visitor's own device (see below).
+   * is Kitten, running 100% on the visitor's own device (see below).
    * Google Translate TTS was REMOVED ENTIRELY in v1.4.0: its one flat
    * voice per language is what made every voice sound the same, and
    * there is no robotic fallback left in this app. If no
    * human-sounding engine can play, playback stops with an honest
    * reason instead of playing a robot. Karaoke highlighting is
-   * timer-estimated on this engine (Kokoro knows the true audio
+   * timer-estimated on this engine (Kitten knows the true audio
    * duration, so its timer is exact). */
   var EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
   var EDGE_SEC_MS_GEC_VERSION = "1-143.0.3650.75";
@@ -2044,26 +2004,23 @@
       });
     }).catch(function (err) { state.edgeFailed = true; throw err; });
   }
-  /* ---------------- Kokoro: free voices that run on your device ----------------
-   * kokoro-js (Apache-2.0) runs the Kokoro-82M model 100% in the
-   * browser via @huggingface/transformers + onnxruntime-web (WebGPU
-   * with WASM fallback). The model is downloaded ONCE from Hugging
-   * Face (~90MB, q8) on first play, then cached by the browser and
-   * works offline. Nothing is uploaded, no account, no key, no
-   * credits, no usage limit. Loaded LAZILY — never on page load —
-   * with a clear progress state, so the visitor always knows what
-   * is happening. If the model cannot load, the app says so honestly
-   * and points at the free ElevenLabs/Cartesia key path — it never
-   * falls back to a robotic voice. */
-  var kokoro = {
-    tts: null,           // loaded KokoroTTS instance
+  /* ---------------- Kitten: free voices that run on your device ----------------
+   * kitten-tts-js (Apache-2.0) runs the KittenTTS Nano 0.8 model 100%
+   * in the browser via onnxruntime-web (WASM only — kitten-tts-js
+   * 0.1.2 has no WebGPU mode). The model is downloaded ONCE from
+   * Hugging Face (~60MB: model + voices.npz) on first play, then
+   * cached by the browser and works offline. Nothing is uploaded, no
+   * account, no key, no credits, no usage limit. Loaded LAZILY —
+   * never on page load — with a clear progress state, so the visitor
+   * always knows what is happening. If the model cannot load, the
+   * app says so honestly and points at the free ElevenLabs/Cartesia
+   * key path — it never falls back to a robotic voice. */
+  var kitten = {
+    tts: null,           // loaded KittenTTS instance
     loading: null,       // in-flight load promise
     failed: false,       // load failed — do not retry silently
     failReason: "",
-    failDetail: "",      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
-    deviceTriedWasm: false, // the WASM fallback load was already tried
-    preferredDevice: null,   // "webgpu" | "wasm" — once WASM wins, stay on it
-    preferredCdn: null       // KOKORO_CDN_ALT once the alt graph wins a load — later loads in the page must stay on that graph, because the primary graph's transformers state is poisoned by a failed first session (see ensureKokoro)
+    failDetail: ""      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
   };
   // The raw error, trimmed to one short line for display. Never a
   // stack trace, never unbounded — error strings from onnxruntime can
@@ -2072,65 +2029,30 @@
     var m = String((err && err.message) || err || "").replace(/\s+/g, " ").trim();
     return m ? m.slice(0, 200) : "";
   }
-  // A raw onnxruntime/WebGPU error ("[webgpu] Error: Failed to get
-  // GPU adapter…") means nothing to a visitor. Translate it to plain
-  // language; anything else passes through (capped).
-  function plainKokoroError(err) {
+  // A raw onnxruntime error means nothing to a visitor. Translate
+  // it to plain language; anything else passes through (capped).
+  function plainKittenError(err) {
     var m = String((err && err.message) || err || "");
-    if (/webgpu|gpu adapter|get gpu|onnxruntime|onnx runtime|device.*not.*(found|available)/i.test(m)) {
+    if (/onnxruntime|onnx runtime|wasm|webgpu|gpu adapter|get gpu|device.*not.*(found|available)/i.test(m)) {
       return "The on-device voice model couldn't load in this browser.";
     }
     return m ? m.slice(0, 160) : "The on-device voice model could not be downloaded.";
   }
-  // Is this the "no GPU backend" class of failure (vs a network or
-  // file error)? Only backend failures get the WASM retry — a
-  // download failure would just fail the same way twice.
-  function isBackendError(err) {
-    var m = String((err && err.message) || err || "");
-    return /webgpu|gpu adapter|get gpu|onnxruntime|onnx runtime|no available backend|device.*not.*(found|available)/i.test(m);
-  }
-  // Pre-flight GPU check (v1.4.3). Ask the browser for a WebGPU
-  // adapter BEFORE creating any ONNX session: if there is none, the
-  // first load goes straight to WASM and a doomed WebGPU session is
-  // never created — which matters because transformers.js poisons
-  // itself on a failed first session (see ensureKokoro). Resolves
-  // to "adapter" | "none" | "error" | "timeout" | "unsupported" and
-  // records it on window.__AURALIS_GPU_PROBE so QA can assert which
-  // branch was taken. Bounded by a 4s timeout so a hanging
-  // requestAdapter() can never stall the first play.
-  function probeGpuAdapter() {
-    try { if (typeof window !== "undefined") window.__AURALIS_GPU_PROBE = window.__AURALIS_GPU_PROBE || "pending"; } catch (e) {}
-    function record(v) { try { if (typeof window !== "undefined") window.__AURALIS_GPU_PROBE = v; } catch (e) {} return v; }
-    if (typeof navigator === "undefined" || !navigator.gpu || typeof navigator.gpu.requestAdapter !== "function") {
-      return Promise.resolve(record("unsupported"));
-    }
-    var settled = false;
-    return new Promise(function (resolve) {
-      var timer = setTimeout(function () { if (!settled) { settled = true; resolve(record("timeout")); } }, 4000);
-      var done = function (v) { if (!settled) { settled = true; clearTimeout(timer); resolve(record(v)); } };
-      try {
-        Promise.resolve(navigator.gpu.requestAdapter()).then(
-          function (adapter) { done(adapter ? "adapter" : "none"); },
-          function () { done("error"); }
-        );
-      } catch (e) { done("error"); }
-    });
-  }
-  function kokoroLoadText() { return $("kokoroLoadText"); }
-  function kokoroLoadFill() { return $("kokoroLoadFill"); }
-  function kokoroLoadBox() { return $("kokoroLoadBox"); }
+  function kittenLoadText() { return $("kittenLoadText"); }
+  function kittenLoadFill() { return $("kittenLoadFill"); }
+  function kittenLoadBox() { return $("kittenLoadBox"); }
   // v1.4.7: the warm-up indicator must be visible at the TOP of
   // the page from the moment the page loads — the old load box
   // lives in the Voices section, below the fold, so a browser
   // check (Nov 16) saw no warm-up indicator on load at all. The
   // banner mirrors the same label + % as the load box.
   function warmupBanner() { return $("warmupBanner"); }
-  function showKokoroLoading(label, pct) {
-    var box = kokoroLoadBox();
+  function showKittenLoading(label, pct) {
+    var box = kittenLoadBox();
     if (box) box.hidden = false;
-    var t = kokoroLoadText();
+    var t = kittenLoadText();
     if (t) t.textContent = label;
-    var f = kokoroLoadFill();
+    var f = kittenLoadFill();
     if (f) f.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
     var banner = warmupBanner();
     if (banner) {
@@ -2141,23 +2063,23 @@
       if (bf) bf.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
     }
   }
-  function hideKokoroLoading() {
-    var box = kokoroLoadBox();
+  function hideKittenLoading() {
+    var box = kittenLoadBox();
     if (box) box.hidden = true;
     var banner = warmupBanner();
     if (banner) banner.hidden = true;
   }
-  function kokoroFail(reason, rawErr, quiet) {
-    kokoro.failed = true;
-    kokoro.failReason = reason;
-    kokoro.failDetail = rawErrorDetail(rawErr);
-    kokoro.loading = null;
-    state.kokoroFailed = true;
+  function kittenFail(reason, rawErr, quiet) {
+    kitten.failed = true;
+    kitten.failReason = reason;
+    kitten.failDetail = rawErrorDetail(rawErr);
+    kitten.loading = null;
+    state.kittenFailed = true;
     // Log the FULL error to the console: v1.4.1 proved the app's
     // generic message hides the cause — a browser check with DevTools
     // open can now read exactly what onnxruntime said.
-    try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro load failed:", rawErr); } catch (e) {}
-    hideKokoroLoading();
+    try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kitten load failed:", rawErr); } catch (e) {}
+    hideKittenLoading();
     // v1.4.6: a quiet (background warm-up) failure does not show
     // the empty state — a visitor who only came to read should not
     // meet an error banner. The honest error still shows the moment
@@ -2169,40 +2091,42 @@
   // advice) instantly failed again with the same stored error.
   // Clear it on a deliberate new tap so a retry really retries —
   // on the fallback device/graph the failure already recorded.
-  function resetKokoroFailure() {
-    kokoro.failed = false;
-    kokoro.failReason = null;
-    kokoro.failDetail = null;
-    state.kokoroFailed = false;
+  function resetKittenFailure() {
+    kitten.failed = false;
+    kitten.failReason = null;
+    kitten.failDetail = null;
+    state.kittenFailed = false;
     updateVoiceEmptyState();
   }
-  // Force single-thread WASM before a WASM load. What the library
-  // source actually says (verified against onnxruntime-web
-  // 1.22.0-dev): when the page is NOT cross-origin isolated —
-  // GitHub Pages sends no COOP/COEP headers, so Auralis never is —
-  // ort already defaults numThreads to 1 and falls back to
-  // single-threading with a warning, so multi-threading was NOT the
-  // cause of the v1.4.1 WASM failure. This explicit 1 is belt and
-  // braces: it removes the one configuration that cannot work here,
-  // and it costs nothing. Best-effort and never blocking: if the
-  // transformers module cannot be imported (odd runtime, QA mock
-  // loader), the load proceeds anyway. The result is recorded on
+  // Point onnxruntime-web at its own .wasm files BEFORE kitten-tts-js
+  // loads (v1.4.9). kitten-tts-js 0.1.2's from_pretrained() sets
+  // ort.env.wasm.wasmPaths ONLY when it is unset — and sets it to
+  // the kitten-tts-js module directory, which is WRONG for a CDN
+  // import: the .wasm files live in onnxruntime-web's dist/, not
+  // next to kitten-tts-js (verified against the kitten-tts-js 0.1.2
+  // +esm bundle, Nov 24, 2026). So the app imports the EXACT
+  // onnxruntime-web URL the bundle imports
+  // (https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/+esm —
+  // same URL, same module instance) and pre-sets wasmPaths to its
+  // dist/ directory. Best-effort and never blocking: if the import
+  // fails the load proceeds anyway and kitten-tts-js falls back to
+  // its own (possibly wrong) paths. The result is recorded on
   // window.__AURALIS_WASM_ENV ("applied" | "mock-loader" |
   // "unavailable") so a QA run can assert the attempt was made.
-  // `transformersUrl` is the transformers module of the graph being
-  // loaded (jsDelivr primary, esm.sh for the alt-graph retry) — the
-  // setting must land on the SAME module instance kokoro-js imports.
-  function configureWasmEnv(transformersUrl) {
-    transformersUrl = transformersUrl || TRANSFORMERS_CDN;
+  // NOTE (risk #1 for the real-browser check): instance-sharing is
+  // inferred from the bundle's import URL, not proven in a live
+  // browser — if the first real load fails with a .wasm 404, this
+  // pre-set did not land on kitten-tts-js's instance.
+  function configureOnnxWasmPaths() {
     try { if (typeof window !== "undefined") window.__AURALIS_WASM_ENV = window.__AURALIS_WASM_ENV || "pending"; } catch (e) {}
     return Promise.resolve().then(function () {
-      if (typeof window === "undefined" || typeof window.__AURALIS_KOKORO_LOADER === "function") {
+      if (typeof window === "undefined" || typeof window.__AURALIS_KITTEN_LOADER === "function") {
         try { window.__AURALIS_WASM_ENV = "mock-loader"; } catch (e) {}
         return;
       }
-      return import(transformersUrl).then(function (mod) {
-        if (mod && mod.env && mod.env.backends && mod.env.backends.onnx && mod.env.backends.onnx.wasm) {
-          mod.env.backends.onnx.wasm.numThreads = 1;
+      return import(ONNX_RUNTIME_CDN).then(function (ort) {
+        if (ort && ort.env && ort.env.wasm) {
+          ort.env.wasm.wasmPaths = ONNX_RUNTIME_WASM_PATHS;
         }
         try { window.__AURALIS_WASM_ENV = "applied"; } catch (e) {}
       });
@@ -2210,176 +2134,100 @@
       try { window.__AURALIS_WASM_ENV = "unavailable"; } catch (e) {}
     });
   }
-  // Load the Kokoro model (once per page). `onProgress` gets
-  // { label, pct } for the loading UI. `opts.quiet` (v1.4.6) marks a
+  // Load the Kitten model (once per page). `opts.quiet` (v1.4.6) marks a
   // background warm-up load: a failure is recorded but shows no
   // empty state until the visitor actually tries to play.
+  // kitten-tts-js has NO progress_callback, so the download is
+  // indeterminate — the load box says what is happening and the
+  // Play/Preview watchdogs show elapsed seconds; there is no %.
+  // There is also no WebGPU probe and no alt-graph machinery:
+  // kitten-tts-js 0.1.2 is WASM-only via onnxruntime-web and does
+  // not use transformers.js, so the poisoned-wasmInitPromise issue
+  // does not exist and a failed load can simply be retried on the
+  // same graph. The ONE retry is an import retry: if the jsDelivr
+  // import itself fails, the esm.sh entry is tried once.
   // Test seam: if the harness sets
-  // window.__AURALIS_KOKORO_MOCK, it is used instead of the CDN —
-  // that is how QA exercises this path without a 90MB download.
-  function ensureKokoro(onProgress, opts) {
-    if (kokoro.tts) return Promise.resolve(kokoro.tts);
-    if (kokoro.loading) return kokoro.loading;
-    if (kokoro.failed) return Promise.reject(new Error(kokoro.failReason || "Kokoro voices could not be loaded."));
-    if (typeof window !== "undefined" && window.__AURALIS_KOKORO_MOCK) {
-      kokoro.tts = window.__AURALIS_KOKORO_MOCK;
-      return Promise.resolve(kokoro.tts);
+  // window.__AURALIS_KITTEN_MOCK, it is used instead of the CDN —
+  // that is how QA exercises this path without a 60MB download.
+  function ensureKitten(onProgress, opts) {
+    if (kitten.tts) return Promise.resolve(kitten.tts);
+    if (kitten.loading) return kitten.loading;
+    if (kitten.failed) return Promise.reject(new Error(kitten.failReason || "Kitten voices could not be loaded."));
+    if (typeof window !== "undefined" && window.__AURALIS_KITTEN_MOCK) {
+      kitten.tts = window.__AURALIS_KITTEN_MOCK;
+      return Promise.resolve(kitten.tts);
     }
-    var firstTime = !storeGet("auralis.kokoro.seen", false);
-    showKokoroLoading((opts && opts.loadingLabel) || (firstTime
-      ? "First play downloads the voice model once (~90MB) — then it works offline, even on a plane. Best on Wi-Fi…"
+    var firstTime = !storeGet("auralis.kitten.seen", false);
+    showKittenLoading((opts && opts.loadingLabel) || (firstTime
+      ? "First play downloads the voice model once (~60MB) — then it works offline, even on a plane. Best on Wi-Fi…"
       : "Loading the on-device voices…"), 0);
-    // THE BYPASS, v1.4.3 (verified against transformers.js 3.5.1
-    // source): the first attempt's device is chosen AFTER a
-    // probeGpuAdapter() call (below) — "advertises a GPU" is not
-    // "has a working GPU": headless Chrome has navigator.gpu yet its
-    // requestAdapter() returns nothing. And the WASM retry runs on a
-    // FRESH module graph (KOKORO_CDN_ALT, esm.sh). Why a fresh
-    // graph: transformers.js caches a failed first session creation
-    // in a module-level `wasmInitPromise` that is NEVER reset
-    // (createInferenceSession: `if (wasmInitPromise) await
-    // wasmInitPromise;` … `wasmInitPromise ??= sessionPromise`).
-    // v1.4.0–v1.4.2 retried on WASM in the SAME module, so the
-    // retry awaited the rejected promise and re-threw the original
-    // WebGPU error without ever creating a WASM session — the
-    // v1.4.2 Details line ("[webgpu] Error: Failed to get GPU
-    // adapter") proved the retry never ran. The probe avoids the
-    // doomed WebGPU attempt entirely; the alt graph makes the retry
-    // real even when a WebGPU attempt fails despite an adapter.
-    function attempt(deviceName, cdnUrl) {
-      cdnUrl = cdnUrl || KOKORO_CDN;
+    // Test seam: if the harness sets window.__AURALIS_KITTEN_LOADER,
+    // it replaces the CDN import + from_pretrained step, so QA can
+    // simulate a load failure and a retry.
+    function attempt(cdnUrl) {
       // Promise.resolve().then() so even a synchronous import() throw
       // (odd runtimes) becomes a rejection the .catch below handles.
-      // Test seam: if the harness sets window.__AURALIS_KOKORO_LOADER,
-      // it replaces the CDN import + from_pretrained step, so QA can
-      // simulate a WebGPU failure followed by a WASM success.
-      // A WASM attempt first configures single-thread WASM (above);
-      // a WebGPU attempt skips it.
-      var run = function () { return Promise.resolve().then(function () {
-        var opts = {
-          dtype: "q8",
-          device: deviceName,
-          progress_callback: function (p) {
-            if (!p) return;
-            var label = "Loading the on-device voices…";
-            var pct = null;
-            if (typeof p.progress === "number") pct = Math.round(p.progress);
-            // transformers.js v3 progress statuses (verified against
-            // the 3.5.1 bundle): initiate / download / progress /
-            // done / ready. The old "downloading"/"loading" labels
-            // never matched anything, so no percentage ever showed
-            // during a real 30s download (v1.4.1). "downloading" is
-            // kept as an alias because the QA loader mock uses it.
-            if (p.status === "initiate") label = "Starting the voice download…";
-            else if (p.status === "download") label = "Downloading the voice model once (~90MB)" + (p.file ? " — " + String(p.file).split("/").pop() : "") + "…";
-            else if (p.status === "progress" || p.status === "downloading") label = "Downloading the voice model once (~90MB)" + (pct !== null ? " — " + pct + "%" : "") + (p.file ? " (" + String(p.file).split("/").pop() + ")" : "") + "…";
-            else if (p.status === "done") label = "Downloaded — loading the voice model…";
-            else if (p.status === "ready") label = "Voices ready.";
-            else if (p.status === "loading") label = "Loading the voice model…";
-            if (onProgress) onProgress({ label: label, pct: pct });
-            showKokoroLoading(label, pct);
-            // The visitor is looking at the Play button, not the
-            // Voices section where the load box lives — mirror the
-            // percentage there while a play is waiting on the model.
-            if (state.playing && state.engine === "free" && !kokoro.tts) {
-              setPlayButtonLabel(pct !== null ? "⏳ Loading voices… " + pct + "%" : "⏳ Loading voices…");
-            }
-            // v1.4.6: same mirror for a Preview tap waiting on the
-            // model — the button must keep showing the download %,
-            // not sit on a bare "Loading…" for a minute.
-            if (state.activePreviewBtn) {
-              try { state.activePreviewBtn.textContent = "⏳ Loading…" + (pct !== null ? " " + pct + "%" : ""); } catch (e) {}
-            }
-          }
-        };
-        if (typeof window !== "undefined" && typeof window.__AURALIS_KOKORO_LOADER === "function") {
-          return window.__AURALIS_KOKORO_LOADER(KOKORO_MODEL, opts, cdnUrl);
+      return Promise.resolve().then(function () {
+        if (typeof window !== "undefined" && typeof window.__AURALIS_KITTEN_LOADER === "function") {
+          return window.__AURALIS_KITTEN_LOADER(KITTEN_MODEL, {}, cdnUrl);
         }
         // No fetch (very old browser / odd runtime): the model cannot
         // be downloaded at all. The final .catch below routes this
-        // through kokoroFail like any other load failure, so the
+        // through kittenFail like any other load failure, so the
         // honest empty state shows.
         if (typeof window === "undefined" || typeof window.fetch === "undefined") {
           throw new Error("This browser can't download the on-device voice model.");
         }
         return import(cdnUrl).then(function (mod) {
-          var KokoroTTS = mod.KokoroTTS;
-          if (!KokoroTTS) throw new Error("The voice library did not load.");
-          return KokoroTTS.from_pretrained(KOKORO_MODEL, opts);
+          var KittenTTS = mod.KittenTTS;
+          if (!KittenTTS) throw new Error("The voice library did not load.");
+          return KittenTTS.from_pretrained(KITTEN_MODEL);
         });
       });
-      };
-      // A WASM attempt first configures single-thread WASM on the
-      // transformers module of the graph being loaded (jsDelivr
-      // primary, esm.sh for the alt-graph retry); a WebGPU attempt
-      // skips it.
-      if (deviceName === "wasm") return configureWasmEnv(cdnUrl === KOKORO_CDN_ALT ? TRANSFORMERS_CDN_ALT : TRANSFORMERS_CDN).then(run);
-      return run();
     }
-    // The load chain. The device is chosen only after the GPU probe
-    // (skipped when a previous load already settled on WASM): an
-    // adapter means WebGPU first, anything else means WASM first —
-    // so a browser with no working GPU never creates the session
-    // that would poison transformers.js. If the WebGPU attempt fails
-    // with a backend error anyway, exactly ONE retry runs on WASM
-    // from the FRESH esm.sh module graph (never the poisoned
-    // primary graph) — and if that also fails, the Details line
-    // shows the WASM error, not the WebGPU one. Non-backend errors
-    // (network, file) fail straight away: retrying them on WASM
-    // would just fail the same way twice.
-    kokoro.loading = Promise.resolve().then(function () {
-      if (kokoro.preferredDevice) return kokoro.preferredDevice;
-      return probeGpuAdapter().then(function (probe) {
-        return probe === "adapter" ? "webgpu" : "wasm";
-      });
-    }).then(function (firstDevice) {
-      var firstCdn = kokoro.preferredCdn || KOKORO_CDN;
-      return attempt(firstDevice, firstCdn).catch(function (err) {
-        if (firstDevice === "webgpu" && !kokoro.deviceTriedWasm && isBackendError(err)) {
-          kokoro.deviceTriedWasm = true;
-          kokoro.preferredDevice = "wasm";
-          kokoro.preferredCdn = KOKORO_CDN_ALT;
-          showKokoroLoading("The fast voice engine isn't available here — trying the standard engine…", 0);
-          return attempt("wasm", KOKORO_CDN_ALT);
+    function isImportError(err) {
+      var m = String((err && err.message) || err || "");
+      return /failed to fetch|network ?error|dynamically imported|loading chunk|script error|import\(\)/i.test(m);
+    }
+    kitten.loading = configureOnnxWasmPaths().then(function () {
+      return attempt(KITTEN_CDN).catch(function (err) {
+        // Only a CDN import failure retries on the alternate CDN; a
+        // model-load failure is reported as-is after one attempt.
+        if (isImportError(err)) {
+          showKittenLoading("The voice library didn't load from the first source — trying another…", 0);
+          return attempt(KITTEN_CDN_ALT);
         }
         throw err;
-      }).then(function (tts) {
-        // Record which graph won, so a later re-entry in this page
-        // (e.g. the empty-audio reload in kokoroSynthesize) stays on
-        // the working graph instead of the poisoned primary one.
-        kokoro.preferredCdn = (firstDevice === "webgpu" && kokoro.deviceTriedWasm) ? KOKORO_CDN_ALT : firstCdn;
-        return tts;
       });
     }).then(function (tts) {
-      kokoro.tts = tts;
-      kokoro.loading = null;
-      storeSet("auralis.kokoro.seen", true);
-      hideKokoroLoading();
+      kitten.tts = tts;
+      kitten.loading = null;
+      storeSet("auralis.kitten.seen", true);
+      hideKittenLoading();
       return tts;
     }).catch(function (err) {
-      kokoro.loading = null;
-      kokoroFail(plainKokoroError(err), err, opts && opts.quiet);
-      throw new Error(kokoro.failReason);
+      kitten.loading = null;
+      kittenFail(plainKittenError(err), err, opts && opts.quiet);
+      throw new Error(kitten.failReason);
     });
-    return kokoro.loading;
+    return kitten.loading;
   }
   // v1.4.6: warm up the voice in the background, on page load —
   // NOT on first Play. The model used to download on first Play,
-  // so the first tap sat silent for ~25s+ while ~90MB downloaded
+  // so the first tap sat silent for ~25s+ while ~60MB downloaded
   // and the first sentence synthesized, which reads as "didn't
   // load at all". Warming up moves that wait to before the tap.
-  // The model files are cached by the library (transformers.js
-  // Cache Storage) and the voice files by kokoro-js (its own
-  // "kokoro-voices" cache bucket), so the second visit reuses
-  // them and the warm-up is near-instant.
+  // The model + voice files are cached by kitten-tts-js (Cache
+  // Storage), so the second visit reuses them and the warm-up is
+  // near-instant.
   var warmupStarted = false;
   function warmUpVoices() {
-    if (warmupStarted || kokoro.tts || kokoro.loading) return;
+    if (warmupStarted || kitten.tts || kitten.loading) return;
     warmupStarted = true;
     state.warmingUp = true;
-    showKokoroLoading("Getting the voice ready…", 0);
-    primeEnglishVoiceFiles();
-    ensureKokoro(function (p) {
+    showKittenLoading("Getting the voice ready…", 0);
+    primeKittenVoiceData();
+    ensureKitten(function (p) {
       // Mirror warm-up progress into the Play button too, so the
       // work is visible where the visitor is looking.
       if (!state.playing && p && typeof p.pct === "number") {
@@ -2387,7 +2235,7 @@
       }
     }, { quiet: true, loadingLabel: "Getting the voice ready…" }).then(function () {
       state.warmingUp = false;
-      hideKokoroLoading();
+      hideKittenLoading();
       if (!state.playing) setPlayButton(false); // restore "▶ Play"
       warmUpSynthesis();
     }).catch(function () {
@@ -2395,7 +2243,7 @@
       // actually taps Play or Preview (which retries). A visitor
       // who only came to read should not meet an error banner.
       state.warmingUp = false;
-      hideKokoroLoading();
+      hideKittenLoading();
       if (!state.playing) setPlayButton(false);
     });
   }
@@ -2411,12 +2259,12 @@
   // failure here changes nothing; Play synthesizes on demand.
   var warmupSynthDone = false;
   function warmUpSynthesis() {
-    if (warmupSynthDone || kokoro.failed || !kokoro.tts) return;
-    if (currentVoiceChoice().engine !== "kokoro") return;
+    if (warmupSynthDone || kitten.failed || !kitten.tts) return;
+    if (currentVoiceChoice().engine !== "kitten") return;
     warmupSynthDone = true;
     try {
       var sample = languageEntry(currentLanguage()).sample;
-      kokoroSynthesize(sample, currentKokoroVoice()).catch(function () {});
+      kittenSynthesize(sample, currentKittenVoice()).catch(function () {});
       prefetchFirstSentence();
     } catch (e) {}
   }
@@ -2441,33 +2289,18 @@
     }
     setTimeout(warmUpVoices, 1200);
   }
-  // v1.4.6: prime the browser's HTTP cache with the English voice
-  // files (~510KB each, 8 voices) so a later voice switch or first
-  // synthesis doesn't fetch them mid-playback. English ONLY — never
-  // non-English voices. Best effort and silent: a failure here
-  // changes nothing, the file is simply fetched when first needed.
-  // (kokoro-js also keeps its own "kokoro-voices" Cache Storage
-  // bucket after first use, so repeat visits are fast regardless.)
-  function primeEnglishVoiceFiles() {
+  // v1.4.9: prime the browser's HTTP cache with the Kitten voice
+  // embeddings (~3.3MB, voices.npz — all 8 voices in one file) so a
+  // later first synthesis doesn't fetch them mid-playback.
+  // Best effort and silent: a failure here changes nothing, the
+  // file is simply fetched when first needed. (kitten-tts-js also
+  // keeps its own Cache Storage bucket after first use, so repeat
+  // visits are fast regardless.)
+  function primeKittenVoiceData() {
     if (typeof fetch !== "function") return;
-    KOKORO_VOICES.en.forEach(function (v) {
-      try {
-        fetch("https://huggingface.co/" + KOKORO_MODEL + "/resolve/main/voices/" + v.name + ".bin", { cache: "force-cache" }).catch(function () {});
-      } catch (e) {}
-    });
-  }
-  // kokoro-js generate() returns a RawAudio-like object; the exact
-  // shape varies by version/environment ({ audio } vs { data } vs the
-  // Float32Array itself). Extract defensively, or null.
-  function kokoroExtractSamples(result) {
-    if (!result) return null;
-    var data = null;
-    if (result.audio instanceof Float32Array) data = result.audio;
-    else if (result.data instanceof Float32Array) data = result.data;
-    else if (result instanceof Float32Array) data = result;
-    if (!data || !data.length) return null;
-    var sr = (result.sampling_rate || result.sampleRate || 24000);
-    return { samples: data, sampleRate: sr };
+    try {
+      fetch("https://huggingface.co/" + KITTEN_MODEL + "/resolve/main/voices.npz", { cache: "force-cache" }).catch(function () {});
+    } catch (e) {}
   }
   // Float32 PCM -> 16-bit mono WAV blob (44-byte RIFF header).
   function float32ToWavBlob(samples, sampleRate) {
@@ -2562,9 +2395,11 @@
       return (p && p.then) ? p : Promise.resolve();
     } catch (e) { return Promise.reject(e); }
   }
-  // Synthesize one sentence with Kokoro. Returns { blob, durationSec,
-  // samples, sampleRate }. If the WebGPU run yields no samples (a
-  // known readback quirk), reload once on WASM and retry.
+  // Synthesize one sentence with Kitten. Returns { blob, durationSec,
+  // samples, sampleRate }. kitten-tts-js generate() returns a RawAudio
+  // ({ data: Float32Array, sampling_rate: 24000, toBlob() -> WAV Blob })
+  // — a consistent shape, so there is no extract step and no
+  // empty-audio reload quirk: a null/empty result is a plain error.
   // v1.4.8: synthesized audio is CACHED, keyed by voice + speed +
   // text — a retry after a blocked play() must play the ready audio
   // INSTANTLY, never re-synthesize. The device-browser test proved
@@ -2585,12 +2420,12 @@
   var synthQueue = Promise.resolve();
   function synthCacheKey(text, voiceId) {
     var speed = Math.max(0.5, Math.min(2, currentRate() || 1));
-    return (voiceId || DEFAULT_KOKORO_VOICE) + "|" + speed + "|" + String(text);
+    return (voiceId || DEFAULT_KITTEN_VOICE) + "|" + speed + "|" + String(text);
   }
-  function kokoroSynthesize(text, voiceId) {
+  function kittenSynthesize(text, voiceId) {
     var key = synthCacheKey(text, voiceId);
     if (synthCache[key]) return synthCache[key];
-    var task = synthQueue.then(function () { return synthOnceKokoro(text, voiceId); });
+    var task = synthQueue.then(function () { return synthOnceKitten(text, voiceId); });
     synthQueue = task.catch(function () {});
     synthCache[key] = task;
     synthCacheOrder.push(key);
@@ -2598,30 +2433,24 @@
     task.then(null, function () { if (synthCache[key] === task) delete synthCache[key]; });
     return task;
   }
-  function synthOnceKokoro(text, voiceId) {
-    return ensureKokoro().then(function (tts) {
+  function synthOnceKitten(text, voiceId) {
+    return ensureKitten().then(function (tts) {
       var speed = Math.max(0.5, Math.min(2, currentRate() || 1));
-      return tts.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed }).then(function (result) {
-        var out = kokoroExtractSamples(result);
-        if (out) return { blob: float32ToWavBlob(out.samples, out.sampleRate), durationSec: out.samples.length / out.sampleRate, samples: out.samples, sampleRate: out.sampleRate };
-        if (!kokoro.deviceTriedWasm) {
-          kokoro.deviceTriedWasm = true;
-          kokoro.preferredDevice = "wasm";
-          kokoro.tts = null;
-          return ensureKokoro().then(function (tts2) {
-            return tts2.generate(text, { voice: voiceId || DEFAULT_KOKORO_VOICE, speed: speed });
-          }).then(function (result2) {
-            var out2 = kokoroExtractSamples(result2);
-            if (!out2) throw new Error("Kokoro generated no audio for this sentence.");
-            return { blob: float32ToWavBlob(out2.samples, out2.sampleRate), durationSec: out2.samples.length / out2.sampleRate, samples: out2.samples, sampleRate: out2.sampleRate };
-          });
+      return tts.generate(text, { voice: voiceId || DEFAULT_KITTEN_VOICE, speed: speed }).then(function (result) {
+        var data = (result && (result.data || result.audio)) || null;
+        if (!(data instanceof Float32Array) || !data.length) {
+          throw new Error("Kitten generated no audio for this sentence.");
         }
-        throw new Error("Kokoro generated no audio for this sentence.");
+        var sr = (result.sampling_rate || result.sampleRate || 24000);
+        var blob = null;
+        try { if (result && typeof result.toBlob === "function") blob = result.toBlob(); } catch (e) { blob = null; }
+        if (!blob) blob = float32ToWavBlob(data, sr);
+        return { blob: blob, durationSec: data.length / sr, samples: data, sampleRate: sr };
       });
     });
   }
-  function kokoroSentenceAudio(text) {
-    return kokoroSynthesize(text, currentKokoroVoice()).then(function (res) {
+  function kittenSentenceAudio(text) {
+    return kittenSynthesize(text, currentKittenVoice()).then(function (res) {
       var url = URL.createObjectURL(res.blob);
       var a = new Audio(url);
       a._durMs = Math.max(200, Math.round(res.durationSec * 1000));
@@ -2629,7 +2458,7 @@
       return a;
     });
   }
-  // v1.4.8: the Microsoft (Edge) path gets the same cache as Kokoro
+  // v1.4.8: the Microsoft (Edge) path gets the same cache as Kitten
   // — one rule for every voice: a retry replays ready audio, never
   // re-fetches. The Edge fetch is a fast network call, not minutes
   // of on-device inference, but the retry rule is uniform so no
@@ -2663,16 +2492,16 @@
   function prefetchFirstSentence() {
     if (!state.sentences.length) return;
     if (premiumActive()) return;
-    if (currentVoiceChoice().engine !== "kokoro") return;
+    if (currentVoiceChoice().engine !== "kitten") return;
     var s = state.sentences[0];
     var key = (state.title || "") + "\n" + s.text;
     if (state.prefetchKey === key && state.prefetchAudio) return;
     state.prefetchKey = key;
     state.prefetchAudio = null;
-    // v1.4.6: some languages have NO free on-device voice (German,
-    // Hebrew, Arabic) — nothing to prefetch; Play refuses plainly
+    // v1.4.6: non-English languages have NO free on-device voice
+    // (Kitten is English-only) — nothing to prefetch; Play refuses plainly
     // with the way out when the visitor taps it.
-    if (!(KOKORO_VOICES[currentLanguage()] || []).length) return;
+    if (!(KITTEN_VOICES[currentLanguage()] || []).length) return;
     var mismatch = voiceTextMismatch((currentVoiceChoice().lang || currentLanguage()), articleSampleText());
     if (mismatch) return;
     freeFetchAudio(s.text).then(function (audio) {
@@ -2684,7 +2513,7 @@
     var choice = currentVoiceChoice();
     if (choice.engine === "edge") {
       // Real Edge only: Microsoft first; if it fails mid-play, fall
-      // back to the on-device Kokoro voices (still human, still free)
+      // back to the on-device Kitten voices (still human, still free)
       // and say so — never to a robotic voice.
       return edgeSentenceAudio(text).then(function (a) {
         state.freeTransport = "edge";
@@ -2692,20 +2521,20 @@
         if (state.edgeDown) { state.edgeDown = false; updateEdgeDownUI(); }
         return a;
       }).catch(function () {
-        state.freeTransport = "kokoro";
+        state.freeTransport = "kitten";
         state.edgeFailed = true;
         markEdgeDown();
-        return kokoroSentenceAudio(text);
+        return kittenSentenceAudio(text);
       });
     }
-    // Everywhere else: Kokoro on-device, straight away. The Edge
+    // Everywhere else: Kitten on-device, straight away. The Edge
     // handshake is never even attempted here.
-    state.freeTransport = "kokoro";
-    return kokoroSentenceAudio(text);
+    state.freeTransport = "kitten";
+    return kittenSentenceAudio(text);
   }
   function freeWordTimer(s, durationMs) {
     // Timer-estimated karaoke highlighting (the free audio path has no
-    // word-boundary events in the browser). Kokoro knows the true
+    // word-boundary events in the browser). Kitten knows the true
     // audio duration, so its timer is exact; Edge/premium estimate
     // from word count.
     var words = s.text.split(/\s+/).filter(Boolean);
@@ -2772,13 +2601,13 @@
     // v1.4.6: a previous failed load must not make "tap Play to
     // retry" a lie — a deliberate new tap clears the failure and
     // really retries (on the fallback device the failure recorded).
-    if (kokoro.failed) resetKokoroFailure();
-    // v1.4.6: some languages have NO free on-device voice (German,
-    // Hebrew, Arabic). Without this guard the play fell through to
-    // currentKokoroVoice()'s English default and read the article
+    if (kitten.failed) resetKittenFailure();
+    // v1.4.6: non-English languages have NO free on-device voice
+    // (Kitten is English-only). Without this guard the play fell through to
+    // currentKittenVoice()'s English default and read the article
     // in English while the menu said German — a silent wrong voice.
     // Refuse plainly instead, with the way out.
-    if (currentVoiceChoice().engine === "kokoro" && !(KOKORO_VOICES[currentLanguage()] || []).length) {
+    if (currentVoiceChoice().engine === "kitten" && !(KITTEN_VOICES[currentLanguage()] || []).length) {
       state.playing = false; state.paused = false;
       setPlayButton(false);
       var noVoiceMsg = "No free on-device voice for " + languageEntry(currentLanguage()).label + " yet — add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.";
@@ -2822,16 +2651,16 @@
       // Play button says so right where the visitor is looking —
       // v1.4.0 showed "Pause" + a frozen 7% for 30s with no sign
       // anything was happening. Restored to Pause when audio arrives.
-      if (currentVoiceChoice().engine === "kokoro" && !kokoro.failed) {
-        if (!kokoro.tts) {
+      if (currentVoiceChoice().engine === "kitten" && !kitten.failed) {
+        if (!kitten.tts) {
           setPlayButtonLabel("⏳ Loading voices…");
           // Say the wait out loud once (v1.4.4): on a phone the load
           // box lives in the Voices section, below the fold — the
           // visitor looking at the player would otherwise see only a
           // loading label and no reason for it.
-          if (!firstPlayToastShown && !storeGet("auralis.kokoro.seen", false)) {
+          if (!firstPlayToastShown && !storeGet("auralis.kitten.seen", false)) {
             firstPlayToastShown = true;
-            toast("First play downloads the voice model once (~90MB) — then it works offline. This can take a minute on a slow connection…");
+            toast("First play downloads the voice model once (~60MB) — then it works offline. This can take a minute on a slow connection…");
           }
         } else {
           // v1.4.6: the model is here but the first sentence still
@@ -2905,13 +2734,13 @@
         stopLoadWatchdog();
         setPlayButton(false);
         updateVoiceEmptyState();
-        failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.", kokoro.failDetail || rawErrorDetail(err));
+        failPlayback("The free voices aren't answering in this browser — the on-device model couldn't load. Try Microsoft Edge, or add a free ElevenLabs/Cartesia key below.", kitten.failDetail || rawErrorDetail(err));
       });
     }
     next();
   }
   // A Preview tap must NEVER look dead (v1.4.4): on a first tap the
-  // model still has to download (~90MB), which takes a while on a
+  // model still has to download (~60MB), which takes a while on a
   // phone — so the button says so immediately, and a toast explains
   // the wait. Without this the button sat unchanged for a minute
   // while the download ran, which is exactly what Carl reported.
@@ -2938,33 +2767,33 @@
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
       // Same loud handling as playback: say Microsoft is down, switch
-      // the free engine to Kokoro, and do NOT play any other voice
+      // the free engine to Kitten, and do NOT play any other voice
       // as if it were this one.
       markEdgeDown();
     });
   }
-  function previewKokoroVoice(ev, btn) {
-    // v1.4.6: no free on-device voice for this language (German,
-    // Hebrew, Arabic) — refuse plainly instead of previewing the
+  function previewKittenVoice(ev, btn) {
+    // v1.4.6: no free on-device voice for this language (Kitten
+    // is English-only) — refuse plainly instead of previewing the
     // English default under a foreign-language label.
-    if (!(KOKORO_VOICES[currentLanguage()] || []).length) {
+    if (!(KITTEN_VOICES[currentLanguage()] || []).length) {
       toast("No free on-device voice for " + languageEntry(currentLanguage()).label + " yet — add a free ElevenLabs or Cartesia key below for studio voices, or switch the language to English.");
       return;
     }
     setPreviewBusy(btn, true);
     state.activePreviewBtn = btn;
     startPreviewWatchdog(btn);
-    if (kokoro.failed) resetKokoroFailure();
+    if (kitten.failed) resetKittenFailure();
     var sample = languageEntry(currentLanguage()).sample;
-    if (!kokoro.tts && !kokoro.failed) {
-      toast("Loading the on-device voices for the first time (~90MB, once) — this can take a minute on a slow connection…");
-    } else if (kokoro.tts) {
+    if (!kitten.tts && !kitten.failed) {
+      toast("Loading the on-device voices for the first time (~60MB, once) — this can take a minute on a slow connection…");
+    } else if (kitten.tts) {
       // v1.4.6: the model is already here, but the first preview
       // still needs on-device synthesis — seconds of silence on a
       // phone. Say so up front instead of leaving a silent button.
       toast("Making the preview sounds — the first one takes a few seconds on a phone…");
     }
-    kokoroSynthesize(sample, ev.name).then(function (res) {
+    kittenSynthesize(sample, ev.name).then(function (res) {
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
@@ -2975,14 +2804,14 @@
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
-      try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kokoro preview failed:", err); } catch (e) {}
-      toast("Couldn't load the on-device voices (" + plainKokoroError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
+      try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Kitten preview failed:", err); } catch (e) {}
+      toast("Couldn't load the on-device voices (" + plainKittenError(err) + ") — add a free ElevenLabs/Cartesia key below for studio voices.");
     });
   }
   function previewFreeVoice(entry, engine, btn) {
     unlockAudio(); // v1.4.8: the context must be unlocked by THIS tap — a preview synthesized minutes later plays through it, not through a stale gesture.
     if (engine === "edge") previewEdgeVoice(entry, btn);
-    else previewKokoroVoice(entry, btn);
+    else previewKittenVoice(entry, btn);
   }
 
   function setPlayButton(playing) {
@@ -2996,7 +2825,7 @@
     var bb = $("playPauseBtnBottom"); if (bb) bb.textContent = text;
   }
   // Stuck-load watchdog (v1.4.4): a first load on a phone can take
-  // minutes (90MB model on mobile data) with long gaps between
+  // minutes (60MB model on mobile data) with long gaps between
   // progress events — during those gaps the Play button used to sit
   // frozen on "Loading voices…" and look dead. Every 5s while a
   // load is in flight and nothing has arrived yet, the button shows
@@ -3012,14 +2841,14 @@
       // v1.4.6: alive until the first audio exists — the wait covers
       // the model download AND the first synthesis, and a tap during
       // either must see the wait moving, never a dead button.
-      if (!state.playing || state.paused || state.freeAudio || kokoro.failed) { stopLoadWatchdog(); return; }
+      if (!state.playing || state.paused || state.freeAudio || kitten.failed) { stopLoadWatchdog(); return; }
       var secs = Math.round((Date.now() - loadWatchStartedAt) / 1000);
       var pct = "";
-      try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+      try { var f = kittenLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
       // v1.4.8: past 30s on a slow phone, say so — a spinner with a
       // growing number and no explanation still reads as stuck.
       var slowNote = (secs >= 30) ? " — this phone is slow at it, still working…" : "";
-      setPlayButtonLabel(kokoro.tts ? "⏳ Making the first sounds… · " + secs + "s" + slowNote : "⏳ Loading voices…" + pct + " · " + secs + "s" + slowNote);
+      setPlayButtonLabel(kitten.tts ? "⏳ Making the first sounds… · " + secs + "s" + slowNote : "⏳ Loading voices…" + pct + " · " + secs + "s" + slowNote);
     }, 5000);
   }
   function stopLoadWatchdog() { if (loadWatchTimer) { clearInterval(loadWatchTimer); loadWatchTimer = null; } }
@@ -3037,9 +2866,9 @@
       if (!btn || btn.disabled === false) { stopPreviewWatchdog(); return; }
       var secs = Math.round((Date.now() - previewWatchStartedAt) / 1000);
       var pct = "";
-      try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+      try { var f = kittenLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
       var slowNote = (secs >= 30) ? " — this phone is slow at it, still working…" : "";
-      btn.textContent = kokoro.tts ? "⏳ Making the sounds… · " + secs + "s" + slowNote : "⏳ Loading…" + pct + " · " + secs + "s" + slowNote;
+      btn.textContent = kitten.tts ? "⏳ Making the sounds… · " + secs + "s" + slowNote : "⏳ Loading…" + pct + " · " + secs + "s" + slowNote;
     }, 5000);
   }
   function stopPreviewWatchdog() { if (previewWatchTimer) { clearInterval(previewWatchTimer); previewWatchTimer = null; } }
@@ -3050,11 +2879,11 @@
     if (premiumActive()) {
       voiceText = "Voice: " + premiumCfg().provider + " · " + (premiumCfg().voiceId || "default") + " (premium)";
     } else if (state.edgeDown) {
-      voiceText = "Voice: Kokoro (on-device) — Microsoft voices unavailable in this browser";
+      voiceText = "Voice: Kitten (on-device) — Microsoft voices unavailable in this browser";
     } else {
       var choice = currentVoiceChoice();
       if (choice.engine === "edge") voiceText = "Voice: " + edgeVoiceByName(choice.edgeVoice).label + " · " + languageEntry(choice.lang || currentLanguage()).label + " · Microsoft AI (free)";
-      else if (choice.kokoroVoice) voiceText = "Voice: " + kokoroVoiceByName(choice.kokoroVoice).label + " · " + languageEntry(choice.lang || currentLanguage()).label + " · on your device (free)";
+      else if (choice.kittenVoice) voiceText = "Voice: " + kittenVoiceByName(choice.kittenVoice).label + " · " + languageEntry(choice.lang || currentLanguage()).label + " · on your device (free)";
     }
     if (nameEl) nameEl.textContent = voiceText;
     // v1.4.6: the main player shows the voice + language too, so
@@ -3266,7 +3095,7 @@
    * "⬇ Download audio" renders the whole loaded article — the same
    * cleaned, core-only text, in the currently selected voice — into
    * ONE audio file and downloads it, named after the article title.
-   * Kokoro (free, on-device): sentences are synthesized to raw
+   * Kitten (free, on-device): sentences are synthesized to raw
    * samples, joined, and encoded as one WAV. Edge / premium: each
    * sentence is an MP3 stream and the MP3 frames are concatenated —
    * MP3 is a frame stream, so the joined file plays as one track in
@@ -3312,12 +3141,12 @@
     var fmt = downloadFormat();
     var isWav = fmt === "wav";
     var choice = currentVoiceChoice();
-    var voiceId = isWav ? choice.kokoroVoice : (choice.engine === "edge" ? choice.edgeVoice : null);
+    var voiceId = isWav ? choice.kittenVoice : (choice.engine === "edge" ? choice.edgeVoice : null);
     state.downloading = true;
     state.downloadCancelled = false;
     updateDownloadLabel();
     showDownloadProgress("Rendering audio… sentence 1 of " + total, 0);
-    var parts = []; // Kokoro: Float32Arrays · Edge/premium: MP3 blobs
+    var parts = []; // Kitten: Float32Arrays · Edge/premium: MP3 blobs
     var sampleRate = 24000;
     var i = 0;
     function renderNext() {
@@ -3334,7 +3163,7 @@
       var p;
       if (premiumActive()) p = premiumFetchAudio(text);
       else if (choice.engine === "edge") p = edgeSynthesize(text, voiceId, localeOf(voiceId));
-      else p = kokoroSynthesize(text, voiceId).then(function (res) { sampleRate = res.sampleRate || 24000; return res.samples; });
+      else p = kittenSynthesize(text, voiceId).then(function (res) { sampleRate = res.sampleRate || 24000; return res.samples; });
       p.then(function (part) {
         if (state.downloadCancelled) { renderNext(); return; }
         parts.push(part);
@@ -3348,8 +3177,8 @@
         // carries the real error as a details line (v1.4.2), and the
         // full error goes to the console for diagnosis.
         try { if (typeof console !== "undefined" && console.error) console.error("[Auralis] Download render failed:", err); } catch (e) {}
-        showPlaybackError("Couldn't render the audio file (" + plainKokoroError(err) + "). Try again, or switch to the free on-device voice.", kokoro.failDetail || rawErrorDetail(err));
-        toast("Couldn't render the audio file (" + plainKokoroError(err) + "). Try again, or switch to the free on-device voice.");
+        showPlaybackError("Couldn't render the audio file (" + plainKittenError(err) + "). Try again, or switch to the free on-device voice.", kitten.failDetail || rawErrorDetail(err));
+        toast("Couldn't render the audio file (" + plainKittenError(err) + "). Try again, or switch to the free on-device voice.");
       });
     }
     function finishDownload() {
@@ -3388,9 +3217,9 @@
   function loadWaitStatus() {
     var secs = loadWatchStartedAt ? Math.round((Date.now() - loadWatchStartedAt) / 1000) : 0;
     var pct = "";
-    try { var f = kokoroLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
-    if (kokoro.tts) return "Still making the first sounds — " + secs + "s in" + (secs >= 30 ? " — this phone is slow at it, still working" : "") + ". Tap Stop to cancel.";
-    return "Still downloading the voice model once (~90MB)" + (pct ? " — " + pct : "") + (secs ? " · " + secs + "s" : "") + ". Tap Stop to cancel.";
+    try { var f = kittenLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+    if (kitten.tts) return "Still making the first sounds — " + secs + "s in" + (secs >= 30 ? " — this phone is slow at it, still working" : "") + ". Tap Stop to cancel.";
+    return "Still downloading the voice model once (~60MB)" + (pct ? " — " + pct : "") + (secs ? " · " + secs + "s" : "") + ". Tap Stop to cancel.";
   }
   function togglePlayPause() {
     unlockAudio(); // v1.4.8: unlock in THIS tap's gesture, every tap — the audio may only be ready minutes later, and a stale gesture is what the browser blocks.
@@ -3458,11 +3287,11 @@
   ];
   var PROVIDER_META = {
     none: { label: "Free AI voices", fields: [] },
-    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free voices above (Kokoro on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
-    cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free voices above (Kokoro on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
-    openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
-    azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
-    google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Kokoro on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
+    elevenlabs: { label: "ElevenLabs", keyLabel: "ElevenLabs API key", keyPh: "sk_…", voiceLabel: "Voice ID", voicePh: "21m00Tcm4TlvDq8ikWAM (Rachel)", modelLabel: "Model", modelPh: "eleven_turbo_v2_5", help: "The most realistic voices. Find your key at elevenlabs.io → Profile → API Keys. Voice IDs are listed under each voice in VoiceLab — or load your voices below.", freeNote: "Free tier: about 10,000 characters a month — plenty for short listens, not for whole books. The free voices above (Kitten on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
+    cartesia: { label: "Cartesia Sonic", keyLabel: "Cartesia API key", keyPh: "sk_car_…", voiceLabel: "Voice ID", voicePh: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4 (Skylar)", modelLabel: "Model", modelPh: "sonic-3", help: "Cartesia Sonic is rated the closest rival to ElevenLabs for naturalness. Create a free key at cartesia.ai → API Keys. Voice IDs are UUIDs — load your voices below, or paste a voice ID.", freeNote: "Free tier: 20,000 credits a month (~27 minutes of TTS), renews monthly, no card required. The free voices above (Kitten on your device, Microsoft AI voices in Edge) are unlimited with no key at all." },
+    openai: { label: "OpenAI TTS", keyLabel: "OpenAI API key", keyPh: "sk-…", voiceLabel: "Voice", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", voices: OPENAI_VOICES, help: "Create a key at platform.openai.com → API Keys. You pay OpenAI's TTS rates only.", freeNote: "No free tier — pay-as-you-go with OpenAI. Kitten on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
+    azure: { label: "Azure Speech", keyLabel: "Azure subscription key", keyPh: "Your Azure Speech key", voiceLabel: "Neural voice", voicePh: "en-US-AriaNeural", modelLabel: "Region", modelPh: "eastus", voices: AZURE_VOICES, help: "From the Azure portal → your Speech resource → Keys and Endpoint. Region is the short code, e.g. eastus.", freeNote: "Free tier: 500,000 characters a month for neural voices. Kitten on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
+    google: { label: "Google Cloud TTS", keyLabel: "Google Cloud API key", keyPh: "AIza…", voiceLabel: "Voice", voicePh: "en-US-Neural2-F", modelLabel: "—", modelPh: "", voices: GOOGLE_VOICES, help: "Enable Cloud Text-to-Speech in Google Cloud Console and create an API key. You pay Google's TTS rates only.", freeNote: "Free tier: 1 million characters a month for WaveNet/Neural2 (first year). Kitten on-device voices are free and unlimited (Microsoft AI voices in Edge)." },
     "generic-tts": { label: "My own TTS server", keyLabel: "API key (leave blank for local servers)", keyPh: "Optional", voiceLabel: "Voice name", voicePh: "alloy", modelLabel: "Model", modelPh: "tts-1", help: "Any OpenAI-compatible /audio/speech endpoint — a local Kokoro or Piper server, or a hosted TTS API with the same shape. Kokoro sounds noticeably robotic next to the voices above, so treat it as a last resort, not a default.", freeNote: "Your server, your cost — usually free if it runs on your own computer." }
   };
   var elevenLabsVoices = []; // fetched from the account: [{voice_id, name}]
@@ -3486,7 +3315,7 @@
     if (!c.provider || c.provider === "none") {
       host.appendChild(el("p", "muted", isEdgeBrowser()
         ? "Using the free Microsoft AI voices. Nothing to configure — press play and listen."
-        : "Using the free Kokoro AI voices, running on your device. Nothing to configure — press play and listen."));
+        : "Using the free Kitten AI voices, running on your device. Nothing to configure — press play and listen."));
       return;
     }
     var meta = PROVIDER_META[c.provider];
@@ -4458,7 +4287,6 @@
       window.__AURALIS_TEST = {
         guessTextLanguage: guessTextLanguage,
         voiceTextMismatch: voiceTextMismatch,
-        kokoroLangOf: kokoroLangOf,
         voiceLangOf: voiceLangOf,
         currentVoiceChoice: currentVoiceChoice,
         currentLanguage: currentLanguage,
@@ -4472,8 +4300,8 @@
         audioUnlockCalls: function () { return audioUnlockCalls; },
         audioCtxState: function () { return audioCtx ? audioCtx.state : "none"; },
         synthCacheSize: function () { return Object.keys(synthCache).length; },
-        kokoroState: function () { return { tts: !!kokoro.tts, loading: !!kokoro.loading, failed: !!kokoro.failed }; },
-        kokoroVoices: KOKORO_VOICES,
+        kittenState: function () { return { tts: !!kitten.tts, loading: !!kitten.loading, failed: !!kitten.failed }; },
+        kittenVoices: KITTEN_VOICES,
         appState: state
       };
     }

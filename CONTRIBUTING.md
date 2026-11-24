@@ -40,6 +40,27 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.4.9 release notes (local build — not yet pushed/released)
+
+**Auralis v1.4.9 — KittenTTS Nano replaces Kokoro as the free on-device engine**
+
+Why: Carl (Nov 24, ~1:37 PM) said the in-Muse Auralis sample still sounds weird/wrong and asked for a DIFFERENT Hugging Face model that is proven to work — download it, test it, transcribe the audio to make sure it plays well, and do it for the website itself. The winner, proven locally before this swap: KittenML/kitten-tts-nano-0.8 (StyleTTS2, 15M params, 24kHz, Apache-2.0) via kitten-tts-js@0.1.2 — a local generate + faster-whisper transcript of the Bella sample came back word-perfect (the preview "aloud" heard as "allowed" is a Whisper homophone confusion, not a TTS error). Same weights as onnx-community/KittenTTS-Nano-v0.8-ONNX (identical 56,767,095-byte model file + 3,278,902-byte voices.npz).
+
+- **Model swap, same behaviour:** KittenTTS Nano 0.8 replaces Kokoro-82M as the default free on-device engine. The v1.4.8 audio plumbing is untouched — cached synthesis (retry replays ready audio, never re-synthesizes), one audio path with the AudioContext unlocked in the tap gesture, warm-up synthesis at load, honest slow-phone state, no false "start right away" promise. Only the engine underneath changed.
+- **Smaller download:** ~60MB once (model + voices.npz) instead of ~90MB, then cached and works offline. kitten-tts-js has no progress_callback, so the download is indeterminate — the load box says what is happening and the Play/Preview watchdogs show elapsed seconds; there is no %.
+- **8 English voices, English-only:** Bella ★ Recommended (default), Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo — all US English. KittenTTS Nano is an English-only model, so every non-English language now shows the honest empty state in non-Edge browsers (in real Edge, the Microsoft voices still cover every language; studio voices via a free key still work everywhere). A saved Kokoro voice ID from v1.4.8 or earlier resets to Kitten Bella on load, with the existing reset note.
+- **WASM only, no WebGPU probe:** kitten-tts-js 0.1.2 is WASM-only via onnxruntime-web and does not use transformers.js, so the WebGPU probe, the alt-CDN-graph machinery and the poisoned-wasmInitPromise workaround are all deleted. A failed load can simply be retried on the same graph.
+- **wasmPaths fix (verify in the real browser):** kitten-tts-js sets `ort.env.wasm.wasmPaths` to its own module directory when unset — wrong for a CDN import, because the .wasm files live in onnxruntime-web's dist/. The app now imports the EXACT onnxruntime-web URL the kitten-tts-js 0.1.2 +esm bundle imports (`https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/+esm`, verified from the bundle Nov 24, 2026) first and pre-sets `wasmPaths` to its dist/ directory (`https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/`) before importing kitten-tts-js, so the setting lands on the same module instance. Instance-sharing is inferred from the bundle's import URL, not proven in a live browser — if the first real load fails with a .wasm 404, the pre-set did not land. The espeak phonemizer loads at first generate() and fetches its data at runtime — a failure there surfaces as the real error, never a fake promise.
+- **Kept from v1.4.8:** cached synthesis, one audio path, warm-up, honest slow state, real Download ZIP link (now `v1.4.9.zip`).
+- **Service worker:** cache bumped to `auralis-v1.4.9`. Footer shows `v1.4.9`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.4.9
+git push origin v1.4.9
+gh release create v1.4.9 --title "v1.4.9 — KittenTTS Nano replaces Kokoro as the free on-device engine" --notes-file /tmp/auralis-v1.4.9-release-notes.md
+```
+
 ### v1.4.8 release notes (local build — not yet pushed/released)
 
 **Auralis v1.4.8 — one tap, every voice, same behaviour**

@@ -13,12 +13,12 @@ window.AURALIS_CONFIG = {
     rate: 1.0,
     pitch: 1.0,
     // Preferred voice name fragments, in order. First match wins.
-    // Free voices only: Kokoro on-device voices in most browsers,
+    // Free voices only: Kitten on-device voices in most browsers,
     // Microsoft AI voices in Microsoft Edge. Device/browser voice
     // names (Google US English, Samantha, Alex, Daniel…) sounded
     // robotic and are gone.
     preferredNames: [
-      "Kokoro Heart", "Microsoft Aria", "Microsoft Jenny", "Microsoft Guy"
+      "Kitten Bella", "Microsoft Aria", "Microsoft Jenny", "Microsoft Guy"
     ]
   },
 
