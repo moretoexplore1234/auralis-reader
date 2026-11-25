@@ -40,6 +40,66 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.5.1 release notes (local build — not yet pushed/released)
+
+**Auralis v1.5.1 — Chrome-trim + a Retry download that really retries**
+
+Why: Carl (Nov 25, ~3:17 PM) reported two things: (1) pasting a link still
+reads page chrome out loud — publish info, dates/times, "page this" — it
+should just say the article; (2) the voice download failed, the app said
+retry, but retrying would not work.
+
+- **FIX 1 — chrome-trim:** the spoken text is now the article only.
+  Publish/updated labels with by-names, dates and times ("Posted by Jane
+  Doe on Wednesday, November 12, 2026 at 6:56:24 PM", "Updated at 3:27
+  PM", "Published Nov 12, 2026, 3:27 PM", year-less and ISO dates),
+  bylines ("By Jane Doe / November 12, 2026"), share tails ("Share this
+  article on Facebook Twitter LinkedIn"), pagination ("Page 2 of 3",
+  "Continued on page 2", "(Page 2)"), breadcrumbs ("Home / Blog / Buyer
+  Resources"), tag lists, "Related Reading", "Post a Comment",
+  "Listen to this article", "Table of contents", "Jump to", "5-minute
+  read", and copyright footers — including ones that sit OUTSIDE the
+  `<footer>` element — are all stripped. The whole-body fallback (no
+  `<article>`/`<main>`) is split into ~4-sentence blocks so the radar
+  can cut chrome blocks instead of keeping one giant paragraph. Guards
+  verified: "By November the leaves had fallen.", "Updated guidance
+  says…", "the meeting starts at 3 PM", "The report covers January —
+  November 2026.", and "Copyright reform passed the House last year."
+  all still read aloud. Proven on real pages: Jett Del Mar CMA
+  (29 sentences / 610 words, unchanged) and a Reflector AP summary
+  (31 sentences / 318 words — was starting "Skip to main content You
+  have permission to edit this article." and ending with the copyright
+  footer; now starts at the flood watch and ends at the last warning).
+  Full before/after in QA-v17.md.
+- **FIX 2 — Retry download:** diagnosis — there was NO visible retry
+  control at all (the empty state had no button), and a stalled load
+  had no timeout, so Play/Preview joined the same hung promise forever
+  and the Preview button stayed disabled forever. Now: a visible
+  "↻ Retry download" button in the empty state (after a failure), and
+  on the warm-up banner + Voices load box once a download has been
+  going 30s (stuck or just slow). Tapping it abandons the in-flight
+  attempt (`kitten.loadGen` generation token — a stale late resolution
+  can no longer clobber the new attempt's state, hide the banner, or
+  mark the new load failed) and re-runs the full download from
+  scratch. Play/Preview keep clearing a stored failure (v1.4.6, now
+  proven by test). A hung Preview re-enables its button after 120s
+  (`__AURALIS_PREVIEW_BUSY_MAX_MS` QA seam) with a `previewGen` guard
+  so a stale completion can't clobber the new attempt. The empty
+  state's Retry row stays hidden when the box shows for no-free-voice
+  (e.g. German — retrying the download would not help).
+- **Kept from v1.5.0:** KittenTTS Nano 0.8, cached synthesis, one audio
+  path, warm-up, honest slow state, Trim silence default ON, real
+  Download ZIP link (now `v1.5.1.zip`).
+- **Service worker:** cache bumped to `auralis-v1.5.1`. Footer shows
+  `v1.5.1`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.5.1
+git push origin v1.5.1
+gh release create v1.5.1 --title "v1.5.1 — Chrome-trim + a Retry download that really retries" --notes-file /tmp/auralis-v1.5.1-release-notes.md
+```
+
 ### v1.5.0 release notes (local build — not yet pushed/released)
 
 **Auralis v1.5.0 — Trim silence: the pauses between words stay short**

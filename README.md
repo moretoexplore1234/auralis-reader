@@ -104,6 +104,8 @@ There is no backend, no database, no analytics, no tracking, and no code that ph
 ## Known limits
 
 - Voice quality depends on your connection and browser. In Microsoft Edge the free voices are Microsoft's (Edge Read Aloud); everywhere else they are Kitten, running on your device after a one-time ~60MB model download from Hugging Face. If the model can't load, the app says so honestly and points at the free ElevenLabs/Cartesia key path — it never falls back to a robotic voice. Google Translate TTS was removed entirely in v1.4.0.
+- **v1.5.1 — Retry download:** if the voice download fails or stalls, a visible **↻ Retry download** button appears — in the empty state after a failure, and on the warm-up banner + load box if the download is still going after 30 seconds. Tapping it abandons the stuck attempt and re-downloads the model from scratch. Tapping Play or Preview also retries after a failed load. A Preview that hangs re-enables its button after 2 minutes so it can be tapped again.
+- **v1.5.1 — pasted links read only the article:** publish labels, dates and times, bylines, share buttons, page numbers, breadcrumbs, tag lists, related-links blocks and copyright footers are stripped before reading — the spoken text is the article itself, nothing around it.
 - Sites with strong bot protection or paywalls can't be read by URL — use Paste Text.
 - Local AI apps (Ollama / LM Studio) need to allow browser connections and the page served over `http(s)`, not `file://`.
 - Word highlighting follows the speech closely, with a timing fallback where the browser doesn't report word boundaries — sync is close, not frame-perfect.

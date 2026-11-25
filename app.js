@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.5.0";
+  var APP_VERSION = "v1.5.1";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -518,9 +518,34 @@
 
   // Paragraphs that are navigation / promo, never body text — even when
   // long enough to pass the length filter.
-  var CLUTTER_PARA_RE = /^(read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|advertisement|sponsored|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio)/i;
+  var CLUTTER_PARA_RE = /^(read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|prev\.?$|next\.?$|page\s+\d+(\s+of\s+\d+)?\.?\s*$|related( articles?| reading| stories| posts)?\.?\s*:?\s*$|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share( this)?\.?$|share this|follow us|comments?|leave a (comment|reply)|post a comment|to post a comment|advertisement|sponsored|back to (top|blog|home|posts|results|search)|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio|tags?\s*:|posted (in|under)|filed (in|under)|categor(y|ies)\s*:|©|copyright\s+(©|\d{4})|you have permission to|edit\.?$|close\.?$|\d+\s+comments?\.?\s*$)/i;
+  // A breadcrumb line ("Home / Blog / Buyer Resources") — short
+  // segments joined by / > › », starting with a section word, no
+  // sentence punctuation. Never matches a real sentence (those end
+  // with . ! ? or run long).
+  function isBreadcrumbLine(t) {
+    var s = String(t || "").trim();
+    if (!s || /[.!?]$/.test(s) || wordsOf(s) > 10) return false;
+    if (!/\s*[/>›»]\s*/.test(s)) return false;
+    var parts = s.split(/\s*[/>›»]\s*/).map(function (p) { return p.trim(); }).filter(Boolean);
+    if (parts.length < 2) return false;
+    if (!parts.every(function (p) { return /^[A-Z0-9][\w\s&'’-]{0,30}$/.test(p); })) return false;
+    return /^(home|blog|news|articles?|sections?)\b/i.test(parts[0]) || parts.some(function (p) { return /^(home|blog|news)$/i.test(p); });
+  }
   function isClutterParagraph(t) {
     if (CLUTTER_PARA_RE.test(t)) return true;
+    if (isBreadcrumbLine(t)) return true;
+    // A copyright footer line ("© Copyright 2023 ... All rights
+    // reserved | Terms of Use | Privacy Policy") — but ONLY when
+    // the paragraph IS (mostly) the footer. A real paragraph that
+    // merely carries a footer sentence at its end (a mixed
+    // paragraph) must survive: its footer sentence is cut at
+    // sentence level, and dropping the whole paragraph would eat
+    // real sentences with it (v1.5.1 QA caught this).
+    if (/©|copyright/i.test(t) && /all rights reserved/i.test(t)) {
+      if (t.length < 200 || /^\s*(©|\(c\)|copyright\b)/i.test(t)) return true;
+    }
+    if (/^©/.test(t.trim())) return true; // "© 2026 ..." line
     if (/^read more[:\s]/i.test(t)) return true;
     if (TIMESTAMP_ONLY_RE.test(t)) return true; // a line that is only a date/time
     if (/^\s*by\s+\S.{1,60}$/i.test(t) && !/[.!?]/.test(t)) return true; // byline line
@@ -547,7 +572,15 @@
       "[class*='more-from'], [class*='also-like'], [class*='author-bio'], [class*='author-box'], [class*='byline-box'], " +
       "[class*='byline'], [class*='dateline'], [class*='timestamp'], [class*='article-meta'], [class*='post-meta'], [class*='entry-meta'], time, " +
       "[class*='promo'], [class*='outbrain'], [class*='taboola'], [class*='trending'], [class*='sidebar'], " +
-      "[class*='menu'], [class*='toolbar'], [class*='caption'], [class*='credit']";
+      "[class*='menu'], [class*='toolbar'], [class*='caption'], [class*='credit'], " +
+      // v1.5.1: footer/copyright blocks that sit OUTSIDE the <footer>
+      // element (a real news page's copyright lives in a <div>
+      // after </footer>), plus breadcrumbs, tag lists and
+      // share-button blocks — all navigation, never article text.
+      "[class*='copyright'], [id*='copyright'], [class*='footer'], [id*='footer'], " +
+      "[class*='site-header'], [class*='site-footer'], [class*='page-header'], [class*='page-footer'], " +
+      "[class*='breadcrumb'], [class*='tags'], [id*='tags'], [class*='post-tags'], " +
+      "[class*='share-buttons'], [class*='share-tools'], [class*='author-info']";
     var removed = doc.querySelectorAll(junk);
     var clutterRemoved = removed.length;
     removed.forEach(function (n) { n.remove(); });
@@ -591,8 +624,19 @@
       if (text.length > bestText.length) { bestText = text; bestParaCount = r.kept.length; bestRadarRemoved = r.removed.length; }
     });
     if (!bestText) {
+      // Whole-body fallback (no <article>/<main> yielded paragraphs):
+      // split into ~4-sentence blocks so the radar below can score
+      // and cut chrome blocks (nav, footer, copyright) instead of
+      // one giant paragraph that scores "substantive" and keeps
+      // everything — a real news page arrived as a single 2,200-char
+      // block (v1.5.1).
       var bodyText = (doc.body ? doc.body.textContent : "").replace(/\s+/g, " ").trim();
-      if (bodyText.length > 400) bestText = bodyText;
+      if (bodyText.length > 400) {
+        var fbSentences = splitSentences(bodyText);
+        var fbBlocks = [];
+        for (var fbi = 0; fbi < fbSentences.length; fbi += 4) fbBlocks.push(fbSentences.slice(fbi, fbi + 4).join(" "));
+        bestText = fbBlocks.length ? fbBlocks.join("\n\n") : bodyText;
+      }
     }
     return { title: title, author: author, text: bestText, clutterRemoved: clutterRemoved + bestRadarRemoved, paragraphs: bestParaCount };
   }
@@ -607,7 +651,7 @@
    * any paragraph with one tap. The radar works fully with no key and
    * no account; the Hugging Face double-check below is strictly optional.
    */
-  var RADAR_BOILERPLATE = /^(show this thread|show replies|promoted|advertisement|sponsored|read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|page \d+|related( articles?)?:?|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share this|follow us|comments?|leave a (comment|reply)|back to top|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio)/i;
+  var RADAR_BOILERPLATE = /^(show this thread|show replies|promoted|advertisement|sponsored|read more|read next|continue reading|click (here|next|to continue|below)|next (page|article)|previous (page|article)|prev\.?$|next\.?$|page\s+\d+(\s+of\s+\d+)?\.?\s*$|related( articles?| reading| stories| posts)?\.?\s*:?\s*$|you may also like|recommended( for you)?:?|more from|sign up|subscribe( (now|to|for))?|newsletter|share( this)?\.?$|share this|follow us|comments?|leave a (comment|reply)|post a comment|to post a comment|back to (top|blog|home|posts|results|search)|skip to (content|main content)|accept cookies|cookie( policy| notice| settings)?|log ?in|sign ?in|trending( now| stories)?|photo: |caption: |image: |about the author|author bio|tags?\s*:|posted (in|under)|filed (in|under)|categor(y|ies)\s*:|©|copyright\s+(©|\d{4})|you have permission to|edit\.?$|close\.?$|\d+\s+comments?\.?\s*$)/i;
   // Timestamps and datelines are metadata, never substance. A time
   // that is the substance of a sentence ("the meeting starts at
   // 3 PM") is kept — bare hour times without minutes are never
@@ -616,9 +660,18 @@
   // Updated / Posted, standalone, or as "min read" / "X ago".
   var MONTHS_RE = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
   var DATE_RE = "(?:" + MONTHS_RE + "\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{1,2}\\s+" + MONTHS_RE + "\\.?\\s+\\d{4})";
+  // v1.5.1: dates without a year ("November 12", "November 2026")
+  // and machine dates ("2026-11-12", "11/12/2026") — metadata
+  // positions only (publish labels, standalone lines, datelines),
+  // never bare-stripped from real sentences.
+  var DATE_NY_RE = "(?:" + MONTHS_RE + "\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}\\s+" + MONTHS_RE + "\\.?|" + MONTHS_RE + "\\.?\\s+\\d{4})";
+  var ISO_DATE_RE = "\\d{4}-\\d{2}-\\d{2}";
+  var NUM_DATE_RE = "\\d{1,2}/\\d{1,2}/\\d{2,4}";
+  var WEEKDAY_RE = "(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?";
+  var PUB_DATE_RE = "(?:" + WEEKDAY_RE + "(?:" + DATE_RE + "|" + DATE_NY_RE + "|" + ISO_DATE_RE + "|" + NUM_DATE_RE + "))";
   var TIME_RE = "\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM|am|pm)?";
-  var AGO_RE = "\\d+\\s*(?:second|minute|hour|day|week|month|year)s?\\s+ago";
-  var TIMESTAMP_ONLY_RE = new RegExp("^\\s*(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + "|\\d{1,2}\\s*(?:AM|PM|am|pm))\\s*[.!?]?\\s*$", "i");
+  var AGO_RE = "\\d+\\s*(?:seconds?|minutes?|hours?|hrs?|days?|weeks?|months?|years?)\\s+ago";
+  var TIMESTAMP_ONLY_RE = new RegExp("^\\s*(?:" + WEEKDAY_RE + "(?:" + DATE_RE + "|" + DATE_NY_RE + "|" + ISO_DATE_RE + "|" + NUM_DATE_RE + "|" + TIME_RE + "|\\d{1,2}\\s*(?:AM|PM|am|pm))|\\d{1,2}\\s*(?:AM|PM|am|pm))\\s*[.!?]?\\s*$", "i");
   var RADAR_KEEP = 25; // score >= 25 is core content
   function scoreParagraph(p, isX) {
     var text = p.text || "";
@@ -663,33 +716,79 @@
     /^read more\b/i,
     /^continue reading\b/i,
     /^(next|previous)\s+(page|article|story)\b/i,
+    /^(prev|next)\.?$/i,
     /^page\s+\d+\b/i,
     /^\d+\s*(of|\/)\s*\d+$/i,
     /^subscribe\b/i,
     /^sign up\b/i,
     /^(log|sign)\s?in\b/i,
     /^share (this|on)\b/i,
+    /^share\.?$/i,
+    /^(facebook|twitter|x|linkedin|pinterest|whatsapp|reddit|sms|email)(\s+(facebook|twitter|x|linkedin|pinterest|whatsapp|reddit|sms|email|and|,))*\s*\.?$/i,
     /^follow (us|me)\b/i,
     /^advertisement\.?$/i,
     /^sponsored(\s+(content|by))?\.?$/i,
-    /^related articles?\b/i,
+    /^related (articles?|reading|stories|posts)\b/i,
     /^you may also like\b/i,
     /^recommended( for you)?\b/i,
-    /^back to top\.?$/i,
-    /^skip to (content|main content)\.?$/i,
+    /^back to (top|blog|home|posts|results|search)\b/i,
+    /^skip to (content|main content)\b/i,
     /^accept cookies?\.?$/i,
     /^cookie (policy|notice|settings)\.?$/i,
-    /^(leave a|write a) (comment|reply)\b/i,
+    /^(leave a|write a|post a|to post a|to leave a) (comment|reply)\b/i,
     /^comments?\.?$/i,
+    /^\d+\s+comments?\.?$/i,
+    /^\d+(\.\d+)?[kKmM]?\s+shares?\.?$/i,
     /^(get|sign up for) (our )?newsletter\b/i,
     /^newsletter\.?$/i,
     /^trending( now| stories)?\.?$/i,
-    /^more from\b/i
+    /^more from\b/i,
+    /^tags?\s*:/i,
+    /^(posted|filed) (in|under)\b/i,
+    /^categor(y|ies)\s*:/i,
+    /^listen to this (article|story|post)\b/i,
+    /^table of contents\.?$/i,
+    /^jump to\b/i,
+    /^(©|\(c\)|copyright\s+(©|\d{4}))/i,
+    /^all rights reserved\.?$/i,
+    /^all rights reserved\b.*(\||terms of use|privacy policy)/i,
+    /^you have permission to (edit|view|access)\b/i,
+    /^(edit|close)\.?$/i
   ];
   function isUiChromeSentence(s) {
     var t = String(s || "").trim();
     if (!t) return false;
+    if (isBreadcrumbLine(t)) return true;
     return UI_CHROME_SENTENCE_RES.some(function (re) { return re.test(t); });
+  }
+  // Leading chrome clause at the start of a sentence ("Skip to main
+  // content You have permission to edit this article." — two chrome
+  // fragments joined into one sentence when the page arrives as a
+  // single block). Cut the leading clause, then re-test what is
+  // left: if nothing real remains, the sentence goes.
+  var LEADING_CHROME_RES = [
+    /^skip to (content|main content)\b[.,;:|•—–-]?\s*/i,
+    /^you have permission to (edit|view|access)\b[^.!?]*[.!?]?\s*/i,
+    /^back to (blog|home|top|posts|results|search)\b[^.!?]*[.!?]?\s*/i,
+    // Fused chrome (v1.5.1): a nav/button label with no trailing
+    // punctuation runs straight into the next real sentence ("Log
+    // in The river rose…"). Cut the label ONLY when a new sentence
+    // (capital, digit, quote) follows — "Sign up sheets were
+    // posted…" keeps its subject because "sheets" is lowercase.
+    /^(log|sign)\s?in\b[.,;:|•—–-]?\s*(?=[A-Z0-9"“])/i,
+    /^share\s+(this|on)\b[^.!?]{0,40}?[.!?]?\s*(?=[A-Z0-9"“])/i,
+    /^(subscribe|sign\s?up)\b[^.!?]{0,40}?[.!?]?\s*(?=[A-Z0-9"“])/i,
+    /^follow\s+(us|me)\b[^.!?]{0,40}?[.!?]?\s*(?=[A-Z0-9"“])/i,
+    /^(read more|continue reading)\b[^.!?]{0,40}?[.!?]?\s*(?=[A-Z0-9"“])/i,
+    /^related\s+(articles?|reading|stories|posts)?\b[^.!?]{0,40}?[.!?]?\s*(?=[A-Z0-9"“])/i
+  ];
+  function cutLeadingChrome(s) {
+    var t = String(s || "").trim(), prev;
+    do {
+      prev = t;
+      LEADING_CHROME_RES.forEach(function (re) { t = t.replace(re, "").trim(); });
+    } while (t !== prev);
+    return t;
   }
   // Strip UI-chrome sentences from one paragraph. Returns the cleaned
   // text plus the chrome that was cut, so the radar can count it and
@@ -697,7 +796,18 @@
   function stripUiChrome(text) {
     var sentences = splitSentences(text);
     var kept = [], removed = [];
-    sentences.forEach(function (s) { if (isUiChromeSentence(s)) removed.push(s); else kept.push(s); });
+    sentences.forEach(function (s) {
+      // Cut a leading chrome clause first ("Skip to main content
+      // You have permission..." — the remainder is re-tested, so a
+      // real sentence that merely starts near chrome is kept).
+      var s2 = cutLeadingChrome(s);
+      if (!s2) { removed.push(s); return; }
+      if (isUiChromeSentence(s2)) { removed.push(s); return; }
+      // A short fragment left after cutting a leading chrome clause
+      // is chrome too — it was never a real sentence on its own.
+      if (s2 !== s && wordsOf(s2) < 5) { removed.push(s); return; }
+      kept.push(s2);
+    });
     // Trailing "— click here / read more" fragment inside a kept sentence.
     var cleaned = kept.join(" ");
     var frag = cleaned.match(/\s*[—–-]\s*(click here|read more|continue reading)\b[^.!?]*[.!?]?\s*$/i);
@@ -754,7 +864,17 @@
     /[,;]?\s*read more\b[^.!?,;—–-]{0,30}/gi,
     /[,;]?\s*continue reading\b[^.!?,;—–-]{0,30}/gi,
     /[,;]?\s*subscribe( to (our )?(newsletter|updates))?\b[^.!?,;—–-]{0,30}/gi,
-    /[,;]?\s*share this( article| post| story)?\b[^.!?,;—–-]{0,30}/gi
+    /[,;]?\s*sign up for (our )?(newsletter|updates)\b[^.!?,;—–-]{0,30}/gi,
+    // "Share this article on Facebook Twitter LinkedIn" — the old
+    // pattern cut "share this article" and left "on Facebook
+    // Twitter LinkedIn" to be spoken. Swallow the platform tail too.
+    /[,;]?\s*share this( article| post| story)?(\s+on\s+(facebook|twitter|x|linkedin|pinterest|reddit|whatsapp|telegram|email|social media))?\b[^.!?,;—–-]{0,30}/gi,
+    /[,;]?\s*share on (facebook|twitter|x|linkedin|pinterest|reddit|whatsapp|telegram|email)\b[^.!?,;—–-]{0,30}/gi,
+    // Pagination inside a sentence ("Continued on page 2", "Page 2
+    // of 3", "(Page 2)") — the sentence-start rules never see it.
+    /[,;]?\s*continued on page \d+\b[^.!?,;—–-]{0,20}/gi,
+    /\bpage\s+\d+\s+of\s+\d+\b/gi,
+    /\(\s*page\s+\d+\s*\)/gi
   ];
   function cleanSpokenText(text) {
     var removed = [];
@@ -777,21 +897,32 @@
     // plus date/time/ago (or just the label + punctuation), at a
     // sentence start only. The date/time is REQUIRED after the label
     // unless punctuation follows, so "Updated guidance says…" is
-    // never touched.
-    var PUB_RE = new RegExp("(^|[.!?]\\s+)(?:Published|Updated|Posted|Last updated)\\s*:?\\s*(?:on\\s+)?(?:(?:" + DATE_RE + "(?:\\s+at\\s+" + TIME_RE + ")?|" + TIME_RE + "|" + AGO_RE + ")\\s*[.!?]?\\s*|[.!?]+\\s*)", "gi");
+    // never touched. v1.5.1: the label may carry "by <name>" before
+    // the date ("Posted by Richelle Jett & Ernie Hahn on Thursday,
+    // November 12, 2026 at 6:56:24 PM" — the exact dateline a real
+    // blog page speaks aloud), "at" as well as "on", a comma before
+    // the time ("Nov 12, 2026, 3:27 PM"), and year-less / ISO /
+    // numeric dates. A weekday before the date is allowed too.
+    var PUB_RE = new RegExp("(^|[.!?]\\s+)(?:Published|Updated|Posted|Last updated)\\s*:?\\s*(?:by\\s+[^,;|—–.!?\\n]{1,60}?\\s+)?(?:on|at)?\\s*(?:(?:" + PUB_DATE_RE + "(?:(?:\\s+at\\s+|\\s*,\\s*)" + TIME_RE + ")?|" + TIME_RE + "|" + AGO_RE + ")\\s*[.!?]?\\s*|[.!?]+\\s*)", "gi");
+    // "Published by Jane Doe." with NO date at all — the label plus
+    // a by-name is still only metadata, never article substance.
+    var PUB_BY_RE = /(^|[.!?]\s+)(?:Published|Posted|Updated)\s+by\s+[^,;|—–.!?\n]{1,60}[.!?]\s*/gi;
     // Repeat until stable: one global pass eats the ". " boundary the
     // next label needs, so "Updated 2:14 PM." survived after
     // "Published … 3:27 PM." was cut (v1.4.1). Each pass shortens
     // the string, so the loop always terminates.
     var prevT;
     do { prevT = t; t = t.replace(PUB_RE, function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
-    // "5 min read", "· 3 min read"
-    cut(/·?\s*\b\d+\s*(?:min|mins|minute|minutes)\s+read\b/gi);
+    do { prevT = t; t = t.replace(PUB_BY_RE, function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
+    // "5 min read", "· 3 min read", "5-minute read"
+    cut(/·?\s*\b\d+\s*-?\s*(?:min|mins|minute|minutes)\s+read\b/gi);
     // "2 hours ago", "3 days ago"
     cut(new RegExp("\\b" + AGO_RE + "\\b", "gi"));
-    // A date or time opening a sentence and followed by a dash
-    // ("November 13, 2026 — the council met."): the dateline goes.
-    do { prevT = t; t = t.replace(new RegExp("(^|[.!?]\\s+)(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\\s+)?(?:" + DATE_RE + "|" + TIME_RE + ")\\s*[—–-]\\s*", "gi"), function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
+    // A date or time opening a sentence and followed by a dash,
+    // pipe or bullet ("November 13, 2026 — the council met.",
+    // "November 12, 2026 | By Jane Doe"): the dateline goes.
+    // Year-less and machine dates count here too (v1.5.1).
+    do { prevT = t; t = t.replace(new RegExp("(^|[.!?]\\s+)(?:" + PUB_DATE_RE + "|" + TIME_RE + ")\\s*[\\-—–|•]\\s*", "gi"), function (m, pre) { var mm = m.trim(); if (mm) removed.push(mm); return pre; }); } while (t !== prevT);
     cut(SPOKEN_URL_RE);
     cut(SPOKEN_WWW_RE);
     cut(SPOKEN_EMAIL_RE);
@@ -810,8 +941,46 @@
       // A fragment with no letters at all is stray punctuation left
       // by a cut (a lone "." after "5 min read." was removed).
       if (!/[A-Za-z]/.test(s2)) { dropped.push(s2); return; }
+      // A byline carrying its date after a separator ("By Richelle
+      // Jett & Ernie Hahn / November 12, 2026"): cut the trailing
+      // dateline first, so the byline test below can see the byline.
+      // Only for sentences that start with "By" — a real sentence
+      // ending "— November 2026" ("The report covers January —
+      // November 2026") keeps its date.
+      if (/^by\s/i.test(s2)) s2 = s2.replace(new RegExp("\\s*[—–\\-•/]\\s*(?:" + PUB_DATE_RE + "|" + TIME_RE + ")\\s*\\.?$", "i"), "").trim();
+      if (!s2) { dropped.push(s); return; }
+      // A byline carrying a trailing "— <description>" ("By A & B
+      // — the X Group at Douglas Elliman"): cut the trailing segment
+      // ONLY when what is left is a pure byline — a real sentence
+      // ("By Monday — the deadline — the report was ready") fails
+      // that test, because "By Monday — the deadline" is not a
+      // byline, so it is never cut.
+      var bylineCut;
+      do {
+        bylineCut = false;
+        if (/^by\s/i.test(s2)) {
+          var bm = s2.match(/^(.*)\s+[—–\-•/]\s*.+$/);
+          // Same no-/i rule as the byline test below: [A-Z] must mean
+          // capitals only, or the guard eats real sentences.
+          if (bm && /^[Bb]y\s+[A-Z][A-Za-z'’-]*(\s+(?:&|and)?\s*[A-Z][A-Za-z'’-]*|,\s*[A-Z][\w\s'’-]{0,40}){0,7}\.?$/.test(bm[1].trim())) { s2 = bm[1].trim(); bylineCut = true; }
+        }
+      } while (bylineCut);
+      if (!s2) { dropped.push(s); return; }
       // A byline sentence inside a pasted block ("By Jane Doe.").
-      if (/^by\s+[A-Z][^.!,;?]{0,50}\.?$/i.test(s2)) { dropped.push(s2); return; }
+      // Names only: capitalized words (plus & / and), so a real
+      // sentence that merely starts with "By" ("By November the
+      // leaves had fallen.") is kept — the old {0,50} rule ate it.
+      // NO /i flag here: with it, [A-Z] matches lowercase too and
+      // the guard is worthless (v1.5.1 caught this in QA).
+      if (/^[Bb]y\s+[A-Z][A-Za-z'’-]*(\s+(?:&|and)?\s*[A-Z][A-Za-z'’-]*|,\s*[A-Z][\w\s'’-]{0,40}){0,7}\.?$/.test(s2)) { dropped.push(s2); return; }
+      // A copyright footer line ("© Copyright 2023 APG East LLC.
+      // All rights reserved | Terms of Use | Privacy Policy") —
+      // never article substance. The "All rights reserved" tail
+      // often carries "| Terms of Use | Privacy Policy" after it,
+      // so the bare end-anchored pattern is not enough on its own.
+      if (/©/.test(s2) || /^\(c\)\s/i.test(s2) || /^copyright\s+(©|\d{4})/i.test(s2) || (/^all rights reserved\b/i.test(s2) && (s2.length < 80 || /\||terms of use|privacy policy/i.test(s2)))) { dropped.push(s2); return; }
+      // A breadcrumb line ("Home / Blog / Buyer Resources").
+      if (isBreadcrumbLine(s2)) { dropped.push(s2); return; }
       // A sentence that IS only a date or a time is metadata — drop
       // it. (Substance times survive: "the meeting starts at 3 PM"
       // is a real sentence, not a timestamp line.)
@@ -1795,6 +1964,12 @@
     var box = $("voiceEmptyState"); if (!box) return;
     var free = freeVoiceList();
     box.hidden = !(free.voices.length === 0 || state.kittenFailed || (isEdgeBrowser() && state.edgeDown && state.kittenFailed));
+    // v1.5.1: the visible "Retry download" control lives in the
+    // empty state — but only when the voice actually FAILED to
+    // download. When the box shows because there is no free voice
+    // for the language (Kitten is English-only), retrying the
+    // download would not help, so the button stays hidden.
+    var row = $("kittenRetryRow"); if (row) row.hidden = !state.kittenFailed;
   }
   // Microsoft voices in real Edge only. If the Edge handshake fails
   // there, the free engine switches to the on-device Kitten voices —
@@ -2020,7 +2195,8 @@
     loading: null,       // in-flight load promise
     failed: false,       // load failed — do not retry silently
     failReason: "",
-    failDetail: ""      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
+    failDetail: "",      // RAW error message (trimmed, no stack) — shown as a small "Details:" line so a real failure can actually be diagnosed (v1.4.2); the plain reason stays the headline
+    loadGen: 0           // v1.5.1: generation — a retry abandons the in-flight attempt; its late resolution must not clobber the new attempt's state
   };
   // The raw error, trimmed to one short line for display. Never a
   // stack trace, never unbounded — error strings from onnxruntime can
@@ -2062,12 +2238,40 @@
       var bf = $("warmupFill");
       if (bf) bf.style.width = (typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0) + "%";
     }
+    // v1.5.1: a fresh load hides the Retry buttons and restarts the
+    // stuck-load timer — after KITTEN_RETRY_MS with no load
+    // completing, the download may be stuck (or just slow), so the
+    // buttons appear on the load box + banner as the visitor's
+    // escape hatch. 30s matches the slow-phone note threshold the
+    // watchdogs already use. QA seam: window.__AURALIS_KITTEN_RETRY_MS.
+    hideKittenRetryBtns();
+    try { if (warmupRetryTimer) clearTimeout(warmupRetryTimer); } catch (e) {}
+    warmupRetryTimer = setTimeout(function () {
+      warmupRetryTimer = null;
+      if (!kitten.loading || kitten.tts) return;
+      showKittenRetryBtns();
+    }, (typeof window !== "undefined" && typeof window.__AURALIS_KITTEN_RETRY_MS === "number") ? window.__AURALIS_KITTEN_RETRY_MS : 30000);
   }
   function hideKittenLoading() {
     var box = kittenLoadBox();
     if (box) box.hidden = true;
     var banner = warmupBanner();
     if (banner) banner.hidden = true;
+    hideKittenRetryBtns();
+    try { if (warmupRetryTimer) { clearTimeout(warmupRetryTimer); warmupRetryTimer = null; } } catch (e) {}
+  }
+  // v1.5.1: the visible "Retry download" buttons on the load box
+  // and the warm-up banner (the empty state's button is separate —
+  // it shows on failure, these show on a stuck load).
+  var warmupRetryTimer = null;
+  function hideKittenRetryBtns() {
+    ["kittenLoadRetryBtn", "warmupRetryBtn"].forEach(function (id) { var b = $(id); if (b) b.hidden = true; });
+  }
+  function showKittenRetryBtns() {
+    var lb = $("kittenLoadRetryBtn");
+    if (lb && kittenLoadBox() && !kittenLoadBox().hidden) lb.hidden = false;
+    var wb = $("warmupRetryBtn");
+    if (wb && warmupBanner() && !warmupBanner().hidden) wb.hidden = false;
   }
   function kittenFail(reason, rawErr, quiet) {
     kitten.failed = true;
@@ -2161,6 +2365,12 @@
     showKittenLoading((opts && opts.loadingLabel) || (firstTime
       ? "First play downloads the voice model once (~60MB) — then it works offline, even on a plane. Best on Wi-Fi…"
       : "Loading the on-device voices…"), 0);
+    // v1.5.1: capture this attempt's generation. A retry bumps
+    // kitten.loadGen and abandons this promise — there is no way to
+    // cancel a fetch/import in flight, so the stale .then/.catch
+    // below must not touch kitten.tts / kitten.loading / failure
+    // state that the new attempt now owns.
+    var gen = kitten.loadGen || 0;
     // Test seam: if the harness sets window.__AURALIS_KITTEN_LOADER,
     // it replaces the CDN import + from_pretrained step, so QA can
     // simulate a load failure and a retry.
@@ -2200,17 +2410,52 @@
         throw err;
       });
     }).then(function (tts) {
+      if (gen !== kitten.loadGen) {
+        // Stale success: a retry superseded this attempt. The model
+        // DID load, so hand the instance back to THIS caller (their
+        // Play/Preview can use it) — but touch nothing shared: the
+        // new attempt owns kitten.tts / kitten.loading now.
+        return kitten.tts || tts;
+      }
       kitten.tts = tts;
       kitten.loading = null;
       storeSet("auralis.kitten.seen", true);
       hideKittenLoading();
       return tts;
     }).catch(function (err) {
+      if (gen !== kitten.loadGen) {
+        // Stale failure: the retry owns the state now. Do NOT call
+        // kittenFail — it would mark the NEW attempt failed before
+        // it has even had its chance.
+        throw err;
+      }
       kitten.loading = null;
       kittenFail(plainKittenError(err), err, opts && opts.quiet);
       throw new Error(kitten.failReason);
     });
     return kitten.loading;
+  }
+  // v1.5.1: the visible "Retry download" control — and the Play /
+  // Preview escape hatch for a hung load. Abandons whatever is in
+  // flight (a stalled ~60MB download has no timeout and no cancel:
+  // the generation token makes its late resolution a no-op), clears
+  // the stored failure and progress, and re-runs the full load from
+  // scratch. Play/Preview already cleared a stored failure since
+  // v1.4.6 — this is the missing half: a load that never settles
+  // at all, which Play used to join forever.
+  function retryKittenDownload(onProgress, opts) {
+    // An abandoned load's late rejection must not surface as an
+    // unhandled rejection (browser console noise) — the stale
+    // .catch in ensureKitten still runs for the abandoned attempt's
+    // own caller; this only marks the shared promise handled.
+    if (kitten.loading) kitten.loading.catch(function () {});
+    kitten.loadGen = (kitten.loadGen || 0) + 1;
+    kitten.loading = null;
+    kitten.tts = null;
+    resetKittenFailure();
+    var retryOpts = opts || {};
+    if (!retryOpts.loadingLabel) retryOpts.loadingLabel = "Retrying the voice download…";
+    return ensureKitten(onProgress, retryOpts);
   }
   // v1.4.6: warm up the voice in the background, on page load —
   // NOT on first Play. The model used to download on first Play,
@@ -2227,6 +2472,11 @@
     state.warmingUp = true;
     showKittenLoading("Getting the voice ready…", 0);
     primeKittenVoiceData();
+    // v1.5.1: capture this attempt's generation. A retry supersedes
+    // this warm-up — its late completion must not hide the banner
+    // while the NEW load is still in flight (the banner + its Retry
+    // button are the only sign the voice is still coming).
+    var gen = kitten.loadGen || 0;
     ensureKitten(function (p) {
       // Mirror warm-up progress into the Play button too, so the
       // work is visible where the visitor is looking.
@@ -2234,11 +2484,13 @@
         setPlayButtonLabel("⏳ Getting the voice ready… " + p.pct + "%");
       }
     }, { quiet: true, loadingLabel: "Getting the voice ready…" }).then(function () {
+      if (gen !== kitten.loadGen) return; // stale: the retry owns the loading UI now
       state.warmingUp = false;
       hideKittenLoading();
       if (!state.playing) setPlayButton(false); // restore "▶ Play"
       warmUpSynthesis();
     }).catch(function () {
+      if (gen !== kitten.loadGen) return; // stale failure: the retry owns the state now
       // Quiet failure: the honest error shows when the visitor
       // actually taps Play or Preview (which retries). A visitor
       // who only came to read should not meet an error banner.
@@ -2856,8 +3108,10 @@
     setPreviewBusy(btn, true);
     state.activePreviewBtn = btn;
     startPreviewWatchdog(btn);
+    var myGen = previewGen; // v1.5.1: a newer Preview tap supersedes this attempt — its late completion must not stop the new watchdog or re-enable its button
     var sample = languageEntry(currentLanguage()).sample;
     edgeSynthesize(sample, ev.name, localeOf(ev.name)).then(function (blob) {
+      if (myGen !== previewGen) return; // superseded — the new attempt owns the button now
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
@@ -2865,6 +3119,7 @@
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       playAudioElement(a).catch(function () { toast("Playback was blocked — tap Preview again, the preview is ready now and will play at once."); });
     }).catch(function () {
+      if (myGen !== previewGen) return; // superseded — do not mark Edge down for a stale attempt
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
@@ -2885,6 +3140,7 @@
     setPreviewBusy(btn, true);
     state.activePreviewBtn = btn;
     startPreviewWatchdog(btn);
+    var myGen = previewGen; // v1.5.1: see previewEdgeVoice — a stale completion must not touch the new attempt's button
     if (kitten.failed) resetKittenFailure();
     var sample = languageEntry(currentLanguage()).sample;
     if (!kitten.tts && !kitten.failed) {
@@ -2896,6 +3152,7 @@
       toast("Making the preview sounds — the first one takes a few seconds on a phone…");
     }
     kittenSynthesize(sample, ev.name).then(function (res) {
+      if (myGen !== previewGen) return; // superseded — the new attempt owns the button now
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
@@ -2903,6 +3160,7 @@
       a.onerror = function () { toast("Preview audio failed to play — tap Preview again."); };
       playAudioElement(a).catch(function () { toast("Playback was blocked — tap Preview again, the preview is ready now and will play at once."); });
     }).catch(function (err) {
+      if (myGen !== previewGen) return; // superseded — the new attempt owns the button now
       stopPreviewWatchdog();
       state.activePreviewBtn = null;
       setPreviewBusy(btn, false);
@@ -2961,14 +3219,35 @@
   // was reported) until the preview plays or fails.
   var previewWatchTimer = null;
   var previewWatchStartedAt = 0;
+  var previewGen = 0; // v1.5.1: a re-enabled Preview tap starts a new attempt — a stale completion must not stop its watchdog or re-disable its button
   function startPreviewWatchdog(btn) {
     stopPreviewWatchdog();
+    previewGen = (previewGen || 0) + 1;
+    var gen = previewGen;
     previewWatchStartedAt = Date.now();
     previewWatchTimer = setInterval(function () {
+      if (gen !== previewGen) { stopPreviewWatchdog(); return; } // superseded by a newer Preview tap
       if (!btn || btn.disabled === false) { stopPreviewWatchdog(); return; }
       var secs = Math.round((Date.now() - previewWatchStartedAt) / 1000);
       var pct = "";
       try { var f = kittenLoadFill(); if (f && f.style.width) { var n = parseInt(f.style.width, 10); if (!isNaN(n) && n > 0) pct = " " + n + "%"; } } catch (e) {}
+      // v1.5.1: the Preview button used to stay disabled FOREVER
+      // when the load hung — the visitor could never tap Preview
+      // again, and "tap Preview again" was a lie. After
+      // PREVIEW_BUSY_MAX_MS (default 120s) the button is re-enabled
+      // with its original label, so a new tap starts a fresh
+      // attempt. The old attempt keeps running in the background;
+      // if it ever completes, its handler is guarded by previewGen
+      // and will not clobber the new attempt. QA seam:
+      // window.__AURALIS_PREVIEW_BUSY_MAX_MS.
+      var maxMs = (typeof window !== "undefined" && typeof window.__AURALIS_PREVIEW_BUSY_MAX_MS === "number") ? window.__AURALIS_PREVIEW_BUSY_MAX_MS : 120000;
+      if (Date.now() - previewWatchStartedAt >= maxMs) {
+        stopPreviewWatchdog();
+        state.activePreviewBtn = null;
+        setPreviewBusy(btn, false);
+        toast("The voice preview is taking too long — tap Preview again to retry the download.");
+        return;
+      }
       var slowNote = (secs >= 30) ? " — this phone is slow at it, still working…" : "";
       btn.textContent = kitten.tts ? "⏳ Making the sounds… · " + secs + "s" + slowNote : "⏳ Loading…" + pct + " · " + secs + "s" + slowNote;
     }, 5000);
@@ -4381,6 +4660,20 @@
       toast("Retrying Microsoft voices…");
       probeEdgeTransport();
     });
+    // v1.5.1: the three visible "Retry download" controls — empty
+    // state (after a failure), warm-up banner + load box (after
+    // 30s stuck). Each abandons any in-flight attempt and re-runs
+    // the full model download from scratch. A failure after the
+    // retry routes through kittenFail again, so the empty state
+    // (with its Retry button) comes back — the button never dies.
+    ["kittenRetryBtn", "warmupRetryBtn", "kittenLoadRetryBtn"].forEach(function (id) {
+      var b = $(id);
+      if (!b) return;
+      b.addEventListener("click", function () {
+        toast("Retrying the voice download…");
+        retryKittenDownload().catch(function () { /* kittenFail already showed the empty state */ });
+      });
+    });
     var verEl = $("appVersion");
     if (verEl) verEl.textContent = APP_VERSION;
     wireCloneStudio();
@@ -4412,6 +4705,7 @@
         isInAppWebView: isInAppWebView,
         resetNonEnglishSavedChoice: resetNonEnglishSavedChoice,
         warmUpVoices: warmUpVoices,
+        retryKittenDownload: retryKittenDownload,
         maybeWarmUpVoices: maybeWarmUpVoices,
         prefetchFirstSentence: prefetchFirstSentence,
         warmUpSynthesis: warmUpSynthesis,
@@ -4419,7 +4713,7 @@
         audioUnlockCalls: function () { return audioUnlockCalls; },
         audioCtxState: function () { return audioCtx ? audioCtx.state : "none"; },
         synthCacheSize: function () { return Object.keys(synthCache).length; },
-        kittenState: function () { return { tts: !!kitten.tts, loading: !!kitten.loading, failed: !!kitten.failed }; },
+        kittenState: function () { return { tts: !!kitten.tts, loading: !!kitten.loading, failed: !!kitten.failed, loadGen: kitten.loadGen || 0 }; },
         kittenVoices: KITTEN_VOICES,
         trimSilence: trimSilence,
         trimSilenceEnabled: trimSilenceEnabled,
