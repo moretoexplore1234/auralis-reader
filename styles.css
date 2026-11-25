@@ -266,6 +266,13 @@ body.reader-mode.reader-dark .reader-byline { color: #B9B2A2; }
 }
 button.chip { cursor: pointer; }
 button.chip:hover { border-color: var(--gold); }
+/* v1.6.1: favourite name is its own button inside the chip wrap,
+   so it can never be mistaken for the remove control. */
+.chip-name {
+  background: none; border: 0; color: inherit; font: inherit;
+  cursor: pointer; padding: 0; text-align: left;
+}
+.chip-name:hover { color: var(--gold-bright); }
 .chip-x {
   background: none; border: 0; color: var(--muted); cursor: pointer;
   font-size: .8rem; line-height: 1; padding: 4px 6px; border-radius: 999px;
@@ -285,6 +292,12 @@ button.chip:hover { border-color: var(--gold); }
 .feed-item .btn { align-self: flex-start; }
 .feed-down {
   border: 1px solid rgba(194,91,74,.55); background: rgba(194,91,74,.10);
+  border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px;
+  font-size: .92rem; color: var(--ivory-dim);
+}
+/* v1.6.1: stale note — last-good posts kept through a failed refresh. */
+.feed-stale {
+  border: 1px solid rgba(201,169,106,.55); background: rgba(201,169,106,.10);
   border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px;
   font-size: .92rem; color: var(--ivory-dim);
 }

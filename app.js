@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.6.0";
+  var APP_VERSION = "v1.6.1";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -695,6 +695,7 @@
       if (/^\s*by\s+\S/i.test(text) && !/[.!?]\s+\S/.test(text)) score -= 60; // byline line
       if (/^\s*(published|updated|posted|last updated)\b/i.test(text)) score -= 60; // dateline
       if (/^(photo|image|picture|illustration|credit)\s*:/i.test(text)) score -= 60; // caption
+      if (isImageCreditLine(text)) score -= 60; // v1.6.1 (e): bare image credit, no prefix
       if (/^about the (author|writer)\b|^author bio\b/i.test(text)) score -= 60; // author bio
       if (/^\s*\d+\s*(of|\/)\s*\d+\s*$/.test(text)) score -= 60; // "1 of 5" pagination
       if (/^\s*\d+\s*$/.test(text)) score -= 60; // bare page number
@@ -876,6 +877,51 @@
     /\bpage\s+\d+\s+of\s+\d+\b/gi,
     /\(\s*page\s+\d+\s*\)/gi
   ];
+  // v1.6.1 (e): image-credit fragments. Jina/BBC text carries bare
+  // credits with no "Photo:" prefix ("Spencer Platt / Getty
+  // Images"), sometimes fused onto the front of the real first
+  // sentence with a file-extension artefact from a stripped image
+  // URL ("webp)Spencer Platt / Getty Images Big technology
+  // firms…"). A bare credit is ONLY a credit: a name + agency, or
+  // an agency alone (optionally + "Photo"), ≤ 8 words. A real
+  // sentence that merely mentions an agency ("Getty Images reported
+  // record profits") never matches — it has a verb after the agency
+  // and no "/" name pattern.
+  var IMAGE_CREDIT_AGENCIES = "(?:Getty Images|Associated Press|PA Media|Reuters|Alamy|Shutterstock|Bloomberg|NurPhoto|Anadolu|AP|AFP|EPA|Getty|BBC)";
+  var IMAGE_CREDIT_AGENCIES_MULTI = "(?:Getty Images|Associated Press|PA Media)";
+  var IMAGE_CREDIT_AGENCIES_SINGLE = "(?:AP|Reuters|AFP|EPA|Getty|BBC|Alamy|Shutterstock|Bloomberg|NurPhoto|Anadolu)";
+  function isImageCreditLine(t) {
+    var s = String(t || "").trim().replace(/^\(?\s*/, "").replace(/\)?\s*\.?$/, "").trim();
+    if (!s || wordsOf(s) > 8) return false;
+    var re = new RegExp("^(?:[A-Z][\\w'’\\-]+(?:\\s+[A-Z][\\w'’\\-]+){0,3}\\s*/\\s*)?" + IMAGE_CREDIT_AGENCIES + "(?:\\s+Photo)?$");
+    if (re.test(s)) return true;
+    if (/^(photo|image|picture)\s+by\s+[A-Z]/i.test(s)) return true;
+    return false;
+  }
+  function stripLeadingImageCredit(s) {
+    var t = String(s || ""), prev;
+    var namePat = "[A-Z][\\w'’\\-]+(?:\\s+[A-Z][\\w'’\\-]+){0,3}";
+    do {
+      prev = t;
+      // File-extension artefacts from a stripped image URL
+      // ("webp)", "jpg.webp)") and a stray ")" left with them.
+      t = t.replace(/^(?:[A-Za-z0-9_-]+\.)?(?:webp|jpe?g|png|gif|avif|svg)\)\s*/i, "").trim();
+      t = t.replace(/^\)+\s*/, "").trim();
+      // A "Name / Agency" credit fused onto a real sentence — cut
+      // only when a new sentence follows (capital, digit, quote).
+      t = t.replace(new RegExp("^" + namePat + "\\s*/\\s*" + IMAGE_CREDIT_AGENCIES + "(?:\\s+Photo)?\\s*[.,;:|•—–-]?\\s*(?=[A-Z0-9\"“])"), "").trim();
+      // A multi-word agency alone fused onto a real sentence
+      // ("Getty Images Big technology…") — same new-sentence
+      // guard, and never before an ALL-CAPS word ("Getty Images
+      // CEO…" keeps its subject).
+      t = t.replace(new RegExp("^" + IMAGE_CREDIT_AGENCIES_MULTI + "\\s*[.,;:|•—–-]?\\s*(?![A-Z]{2,}\\b)(?=[A-Z0-9\"“])"), "").trim();
+      // A single-word agency followed by punctuation ("Reuters.
+      // Big technology…") — the punctuation is what marks it as a
+      // standalone credit, never a sentence subject.
+      t = t.replace(new RegExp("^" + IMAGE_CREDIT_AGENCIES_SINGLE + "[.,;:|•—–-]\\s*(?=[A-Z0-9\"“])"), "").trim();
+    } while (t !== prev);
+    return t;
+  }
   function cleanSpokenText(text) {
     var removed = [];
     var t = String(text || "");
@@ -938,6 +984,16 @@
       // cut ("Read more — the meeting starts…").
       s2 = s2.replace(/^[—–-]\s*/, "").trim();
       if (!s2) { dropped.push(s); return; }
+      // v1.6.1 (e): image-credit fragments (Jina/BBC): strip a
+      // leading credit + file-extension artefact fused onto a real
+      // sentence, drop a sentence that IS only a credit, drop
+      // "(Image: …)" / "Image caption" fragments. A real sentence
+      // that merely mentions an agency survives — the guards live
+      // in stripLeadingImageCredit / isImageCreditLine.
+      s2 = stripLeadingImageCredit(s2);
+      if (!s2) { dropped.push(s); return; }
+      if (isImageCreditLine(s2)) { dropped.push(s2); return; }
+      if (/^\(?\s*(image|photo|picture|illustration)(\s+\d+)?\s*:/i.test(s2) || /^image caption\b/i.test(s2) || /^\(image:[^)]*\)$/i.test(s2)) { dropped.push(s2); return; }
       // A fragment with no letters at all is stray punctuation left
       // by a cut (a lone "." after "5 min read." was removed).
       if (!/[A-Za-z]/.test(s2)) { dropped.push(s2); return; }
@@ -1220,6 +1276,7 @@
   var X_FEED_KEY = "auralis.xFollows.v1";
   var X_FEED_INSTANCE_KEY = "auralis.xFeed.nitterInstance.v1";
   var BROWSE_FAVS_KEY = "auralis.browseFavs.v1";
+  var BROWSE_REMOVED_SEEDS_KEY = "auralis.browseRemovedSeeds.v1";
   var NITTER_INSTANCES = [
     "https://nitter.netbub.com",
     "https://nitter.catsarch.com",
@@ -1248,12 +1305,42 @@
     storeSet(X_FEED_KEY, clean);
     return clean;
   }
+  // v1.6.1: seeds are merged back on EVERY load (dedup by URL), so
+  // a stored list that lost a seed — e.g. v1.6.0 persisted [] after
+  // an accidental ✕ tap — can never lose it permanently. A deliberate
+  // seed removal is tracked separately (removedSeedUrls) and is
+  // restorable by re-saving the site as a favourite.
+  function removedSeedUrls() {
+    var list = storeGet(BROWSE_REMOVED_SEEDS_KEY, null);
+    if (!Array.isArray(list)) return [];
+    var clean = [];
+    list.forEach(function (u) { if (typeof u === "string" && clean.indexOf(u) === -1) clean.push(u); });
+    return clean;
+  }
+  function saveRemovedSeedUrls(list) {
+    storeSet(BROWSE_REMOVED_SEEDS_KEY, removedSeedUrls().concat(list || []).filter(function (u, i, a) { return a.indexOf(u) === i; }));
+  }
   function browseFavs() {
+    var removed = removedSeedUrls();
     var list = storeGet(BROWSE_FAVS_KEY, null);
-    if (!Array.isArray(list)) return BROWSE_SEED_FAVS.slice();
-    return list.filter(function (f) { return f && f.url; }).map(function (f) {
-      return { name: String(f.name || "").slice(0, 60) || hostOf(f.url), url: String(f.url) };
+    var stored = [];
+    var seen = {};
+    (Array.isArray(list) ? list : BROWSE_SEED_FAVS).forEach(function (f) {
+      if (!f || !f.url) return;
+      var url = String(f.url);
+      if (seen[url]) return;
+      seen[url] = true;
+      stored.push({ name: String(f.name || "").slice(0, 60) || hostOf(url), url: url });
     });
+    var merged = [];
+    BROWSE_SEED_FAVS.forEach(function (s) {
+      if (removed.indexOf(s.url) === -1) merged.push({ name: s.name, url: s.url });
+    });
+    stored.forEach(function (f) {
+      if (removed.indexOf(f.url) !== -1) return;
+      if (!merged.some(function (m) { return m.url === f.url; })) merged.push(f);
+    });
+    return merged;
   }
   function saveBrowseFavs(list) {
     var clean = [], seen = {};
@@ -1265,7 +1352,19 @@
       clean.push({ name: String(f.name || "").slice(0, 60) || hostOf(url), url: url });
     });
     storeSet(BROWSE_FAVS_KEY, clean);
+    // Re-saving a seed favourite restores it after a deliberate removal.
+    var removed = removedSeedUrls().filter(function (u) {
+      return !clean.some(function (f) { return f.url === u; });
+    });
+    if (removed.length !== removedSeedUrls().length) storeSet(BROWSE_REMOVED_SEEDS_KEY, removed);
     return clean;
+  }
+  // Remove one favourite. A seed removal is recorded separately so
+  // the stored list alone can never silently lose a seed again.
+  function removeBrowseFav(url) {
+    var u = String(url || "");
+    if (BROWSE_SEED_FAVS.some(function (s) { return s.url === u; })) saveRemovedSeedUrls([u]);
+    return saveBrowseFavs(browseFavs().filter(function (g) { return g.url !== u; }));
   }
   function hostOf(url) {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return String(url || ""); }
@@ -1427,8 +1526,12 @@
         var key = it.link || it.guid || it.text;
         if (!key || seen[key]) return;
         seen[key] = true;
+        var author = xAuthorFromLink(it.link) || r.handle;
         all.push({
-          handle: r.handle, author: xAuthorFromLink(it.link) || r.handle,
+          handle: r.handle, author: author,
+          // v1.6.1: a retweet — the post's author is not the followed
+          // account — is labelled, never filtered out.
+          retweet: author.toLowerCase() !== String(r.handle || "").toLowerCase(),
           text: it.text, link: it.link, date: it.date || null,
           via: r.via, sourceLabel: r.sourceLabel
         });
@@ -1492,7 +1595,20 @@
         return tryNitter(i + 1);
       });
     }
-    return tryFx();
+    // v1.6.1: one full retry pass (short delay) before declaring a
+    // handle down — a transient FxTwitter failure used to fall back
+    // to a short Nitter feed (the 68 → 18 swing: no cap in
+    // parseFeedBody/mergeXFeedItems — the count depends on which leg
+    // answers, FxTwitter carrying the fuller feed — so Fx gets a
+    // second chance before the fallback leg is accepted).
+    function delayMs(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+    function attemptFetch(n) {
+      return tryFx().catch(function (err) {
+        if (n < 1) return delayMs(1000).then(function () { return attemptFetch(n + 1); });
+        throw err;
+      });
+    }
+    return attemptFetch(0);
   }
   // Thread text out of a proxy-chain fetch of an x.com status URL
   // (fetchArticle's { text }): Jina markdown — strip the header,
@@ -1535,13 +1651,19 @@
   // through the existing proxy chain, thread posts extracted in
   // order. Route 3 (never fails): the RSS item's own text.
   function readXFeedItem(item) {
-    var handle = item.author || item.handle || "";
+    var author = item.author || item.handle || "";
+    var followed = item.handle || "";
+    // v1.6.1: a retweet's byline names the real author AND the
+    // account that retweeted it, so it can never read as the
+    // followed account's own post.
+    var isRetweet = !!author && !!followed && author.toLowerCase() !== followed.toLowerCase();
+    var handle = author;
     var link = item.link || "";
     var via = item.sourceLabel || item.via || "FxTwitter";
     function openFromText(body, parts, bylineVia) {
       var title = body.length > 90 ? body.slice(0, 90).replace(/\s+\S*$/, "") + "…" : body;
       var date = item.date ? formatXDate(new Date(item.date).toISOString()) : "";
-      var byline = "By @" + handle + (date ? " · " + date : "") +
+      var byline = "By @" + handle + (isRetweet ? " · retweeted by @" + followed : "") + (date ? " · " + date : "") +
         " · X post · via " + bylineVia +
         (parts > 1 ? " · " + parts + " parts" : " · 1 post") +
         (link ? " · Original: " + link : "");
@@ -1621,19 +1743,89 @@
   // if that yields fewer than 5, all page links. Markdown: [t](u)
   // links. Same-site, article-like, deduped by URL and by title,
   // page order, capped at 40.
+  // v1.6.1 (c): ONE choke point for headline titles — every pass
+  // (HTML anchors, markdown links, line scan) stores its title
+  // through cleanBrowseTitle, so no pass can smuggle raw Jina
+  // markdown ("2 ## Calls for inquiry…", "US announces new
+  // tariffs… The new levies would hit…") into the list.
+  var BROWSE_TITLE_STOP_END = /^(in|of|the|a|an|and|to|for|on|with|by|at|from|as|but|or|nor|after|before|during|against|over|under|between|into|through|without|within|upon|around|across|behind|below|above|toward|towards|until|while|when|where|than|then|ending|including|following|amid|—|–|-)$/i;
+  // Words that can START a summary sentence. The glued-split below
+  // only cuts before one of these — a Titlecase word that merely
+  // continues the headline ("Nvidia shares…", "Thanksgiving
+  // parade…", "Sterling given…", "Earth's defences…") never
+  // qualifies, so a head that ends mid-phrase ("Macy's postpones",
+  // "Trump's accounts traded") is never produced. Conservative by
+  // design: a glued title with no clean boundary stays whole rather
+  // than miscut.
+  var BROWSE_TITLE_STARTERS = "(?:The|A|An|His|Her|Their|Its|This|That|These|Those|It|He|She|They|We|You|My|Our|Your|Once|After|Before|Meanwhile|Now|Today|Yesterday|But|And|So|Then|When|While)";
+  function cleanBrowseTitle(raw) {
+    var s = String(raw || "").replace(/\s+/g, " ").trim();
+    // Markdown links keep their text, drop the URL; emphasis marks go.
+    s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`~]+/g, "");
+    // Leading numbering ("2. ", "2 ", "1) "), heading marks ("## ",
+    // "# ") and bullets ("• ") — looped, so "2 ## " loses both.
+    var prev;
+    do {
+      prev = s;
+      s = s.replace(/^(?:\d+\s*[.)]\s*|\d+\s+|#{1,6}\s+|[•·\-–—]\s+)/, "").trim();
+    } while (s !== prev);
+    s = s.replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    // Glued with NO period ("…including China The new levies would
+    // hit…"): cut before the first summary-starter word, when the
+    // head is a complete headline (>= 15 chars, has a space, does
+    // not end on a preposition/article/conjunction/participle) and
+    // the tail is a complete sentence of its own (>= 20 chars).
+    var gm = s.match(new RegExp("\\s+\"?" + BROWSE_TITLE_STARTERS + "\\s+\"?(?=[a-z0-9]|[A-Z]{2,}\\b)", "g"));
+    if (gm) {
+      var idx = -1, cut = -1;
+      for (var gi = 0; gi < gm.length; gi++) {
+        var at = s.indexOf(gm[gi], gi === 0 ? 0 : idx + 1);
+        if (at < 0) break;
+        idx = at;
+        var head = s.slice(0, at).replace(/["“‘\s]+$/, "").trim();
+        var tail = s.slice(at).replace(/^["“‘\s]+/, "").trim();
+        if (head.length < 15 || head.indexOf(" ") === -1) continue;
+        if (BROWSE_TITLE_STOP_END.test(head.split(/\s+/).pop())) continue;
+        var tailFirstSent = tail.match(/^[^.!?…]+[.!?…]/);
+        var tailSent = tailFirstSent ? tailFirstSent[0].trim() : tail;
+        if (tailSent.length < 20 || tailSent.indexOf(" ") === -1) continue;
+        cut = at;
+        break;
+      }
+      if (cut > 0) s = s.slice(0, cut).trim();
+    }
+    // "Headline. Summary sentence." glued with a real period: cut
+    // after the first sentence when it alone is a complete headline
+    // (>= 15 chars, has a space). Abbreviation dots ("U.S.") can
+    // never qualify — the prefix before them is far too short.
+    var sm = s.match(/^(.{15,}?[.!?])\s+(?=[A-Z0-9"“‘])/);
+    if (sm && sm[1].indexOf(" ") !== -1 && !/[A-Z]\.$/.test(sm[1])) s = sm[1].trim();
+    // Trailing "5 hrs ago Business" / "· 2 hrs ago" tails that
+    // survive without a summary to cut them away.
+    s = s.replace(/\s*[·•|]\s*\d+\s*(?:hrs?|mins?|hours?|minutes?|days?)\s+ago.*$/i, "").trim();
+    s = s.replace(/\s+\d+\s*(?:hrs?|mins?|hours?|minutes?|days?)\s+ago\s+[A-Z][\w &]*$/i, "").trim();
+    if (s.length > 140) s = s.slice(0, 140).replace(/\s+\S*$/, "") + "…";
+    return s;
+  }
+  function cleanBrowseTitleKey(t) {
+    return String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
   function extractBrowseLinks(text, baseUrl) {
     var raw = String(text || "");
     var found = [];
     var seenUrl = {}, seenTitle = {};
     function add(title, href) {
-      var url = browseLinkOk(title, href, baseUrl);
+      var clean = cleanBrowseTitle(title);
+      if (!clean) return;
+      var url = browseLinkOk(clean, href, baseUrl);
       if (!url) return;
       var key = url.replace(/\/$/, "");
       if (seenUrl[key]) return;
-      var tk = String(title).replace(/\s+/g, " ").trim().toLowerCase();
-      if (seenTitle[tk]) return;
-      seenUrl[key] = true; seenTitle[tk] = true;
-      found.push({ title: String(title).replace(/\s+/g, " ").trim(), url: url });
+      var tk = cleanBrowseTitleKey(clean);
+      if (tk && seenTitle[tk]) return;
+      seenUrl[key] = true; if (tk) seenTitle[tk] = true;
+      found.push({ title: clean, url: url });
     }
     var isHtml = /<[a-z][\s\S]*>/i.test(raw) && raw.indexOf("<a ") !== -1;
     if (isHtml) {
@@ -1699,6 +1891,7 @@
   // when the list re-renders (a re-render replaces the DOM nodes).
   var xFeedItems = [];
   var xFeedDown = []; // [{ handle, detail }] — handles whose mirrors are all down
+  var xFeedStale = false; // v1.6.1: true while showing last-good items after a failed refresh
   var xFeedLoading = false;
 
   function renderXFollows() {
@@ -1728,7 +1921,12 @@
     list.innerHTML = "";
     xFeedItems.forEach(function (item) {
       var card = el("article", "feed-item");
-      var head = el("p", "feed-item-handle", "@" + (item.author || item.handle));
+      // v1.6.1: retweets are labelled with both accounts — an
+      // @NASASolarSystem post in @NASA's feed can never look like
+      // NASA's own post. Originals are unchanged.
+      var head = el("p", "feed-item-handle", item.retweet
+        ? "↻ @" + item.handle + " retweeted @" + (item.author || item.handle)
+        : "@" + (item.author || item.handle));
       var date = el("span", "feed-item-date", item.date ? formatXDate(new Date(item.date).toISOString()) : "date unknown");
       head.appendChild(document.createTextNode(" · "));
       head.appendChild(date);
@@ -1753,6 +1951,14 @@
     var status = $("xFeedStatus");
     if (status) {
       status.innerHTML = "";
+      // v1.6.1: stale note when the list on screen is last-good
+      // items kept through a failed refresh.
+      if (xFeedStale && xFeedItems.length) {
+        var stale = el("div", "feed-stale");
+        stale.appendChild(el("strong", null, "Couldn't refresh just now — showing the last posts we got. "));
+        stale.appendChild(document.createTextNode("Try Refresh in a bit."));
+        status.appendChild(stale);
+      }
       xFeedDown.forEach(function (d) {
         var note = el("div", "feed-down");
         note.appendChild(el("strong", null, "@" + d.handle + " — this source is down right now. "));
@@ -1771,18 +1977,22 @@
   }
   // Refresh every followed handle in parallel; a handle that fails
   // keeps its honest down-note while the working handles still
-  // render. Never throws.
+  // render. Never throws. v1.6.1: a failed refresh never wipes a
+  // good list — last-good items of failed handles are kept on screen
+  // (still followed only) with a stale note; the all-down state
+  // appears only when there is genuinely nothing to show.
   function refreshXFeed() {
     var follows = xFollows();
     renderXFollows();
     if (!follows.length) {
-      xFeedItems = []; xFeedDown = [];
+      xFeedItems = []; xFeedDown = []; xFeedStale = false;
       renderXFeed();
       return Promise.resolve([]);
     }
     xFeedLoading = true;
     var btn = $("xRefreshBtn");
     setBusy(btn, true, "Refreshing…");
+    var previous = xFeedItems.slice();
     var settled = follows.map(function (h) {
       return fetchXFeedForHandle(h).then(function (r) { return { ok: true, r: r }; })
         .catch(function (err) { return { ok: false, handle: h, err: err }; });
@@ -1795,8 +2005,21 @@
         if (s.ok) good.push(s.r);
         else down.push({ handle: s.handle, detail: (s.err && s.err.tried ? s.err.tried.join("; ") : (s.err && s.err.message ? s.err.message : "failed")) });
       });
-      xFeedItems = mergeXFeedItems(good);
+      var downHandles = {};
+      down.forEach(function (d) { downHandles[d.handle] = true; });
+      var keptByHandle = {};
+      previous.forEach(function (it) {
+        if (follows.indexOf(it.handle) === -1 || !downHandles[it.handle]) return;
+        (keptByHandle[it.handle] = keptByHandle[it.handle] || []).push(it);
+      });
+      var keptResults = Object.keys(keptByHandle).map(function (h) {
+        return { handle: h, items: keptByHandle[h], via: keptByHandle[h][0].via, sourceLabel: keptByHandle[h][0].sourceLabel };
+      });
+      var keptCount = 0;
+      keptResults.forEach(function (r) { keptCount += r.items.length; });
+      xFeedItems = mergeXFeedItems(good.concat(keptResults));
       xFeedDown = down;
+      xFeedStale = keptCount > 0;
       renderXFeed();
       return xFeedItems;
     });
@@ -1806,23 +2029,32 @@
     if (!row) return;
     row.innerHTML = "";
     browseFavs().forEach(function (f) {
-      var chip = el("button", "chip chip-btn", f.name);
+      // v1.6.1: the remove control is a SEPARATE button beside the
+      // favourite button — never a span nested inside the chip
+      // button — so a tap on the name can only browse, and a tap on
+      // ✕ can only remove. (v1.6.0 nested the ✕ span inside the
+      // <button>, so a tap near its edge could remove the seed
+      // instead of browsing it, and the removal was then persisted.)
+      var wrap = el("span", "chip", "");
+      var chip = el("button", "chip-name", f.name);
       chip.type = "button";
       chip.title = f.url;
+      chip.setAttribute("aria-label", "Browse " + f.name);
       chip.addEventListener("click", function () {
         var input = $("browseUrlInput");
         if (input) input.value = f.url;
         browseCurrentSite(f.url);
       });
-      var x = el("span", "chip-x", "✕");
+      var x = el("button", "chip-x", "✕");
+      x.type = "button";
       x.setAttribute("aria-label", "Remove favourite " + f.name);
-      x.addEventListener("click", function (ev) {
-        ev.stopPropagation();
-        saveBrowseFavs(browseFavs().filter(function (g) { return g.url !== f.url; }));
+      x.addEventListener("click", function () {
+        removeBrowseFav(f.url);
         renderBrowseFavs();
       });
-      chip.appendChild(x);
-      row.appendChild(chip);
+      wrap.appendChild(chip);
+      wrap.appendChild(x);
+      row.appendChild(wrap);
     });
   }
   function renderBrowseList(result) {
@@ -1840,7 +2072,7 @@
       var row = el("div", "browse-item");
       var t = el("button", "browse-title", link.title);
       t.type = "button";
-      t.addEventListener("click", function () { readUrl(link.url); });
+      t.addEventListener("click", function () { readUrl(link.url, null, link.title); });
       row.appendChild(t);
       var host = el("span", "browse-host", hostOf(link.url));
       row.appendChild(host);
@@ -2136,7 +2368,13 @@
       showStatus("error", "Only web pages can be read", "Auralis reads public <strong>http(s)</strong> pages. Paste text instead for anything else.");
       return;
     }
-    var fallback = wordsOf(caption) >= 5 ? { text: caption, title: fallbackTitle || "" } : null;
+    // v1.6.1 (d): a fallback title on its own (Browse passes the
+    // headline) is worth keeping even with no caption text — the
+    // fetch may extract no usable title at all (Jina markdown has
+    // no <title>, so extractFromHtml falls back to the URL itself).
+    // hasFallback still needs real caption words: a bare title must
+    // never offer "read what you pasted" for text that was never pasted.
+    var fallback = (wordsOf(caption) >= 5 || (fallbackTitle || "").trim()) ? { text: caption, title: fallbackTitle || "" } : null;
     var btn = $("readUrlBtn");
     setBusy(btn, true, "Fetching…");
     var x = parseXUrl(url);
@@ -2236,7 +2474,14 @@
       var displayHost = parsed.hostname;
       try { if (res.finalUrl) displayHost = new URL(res.finalUrl).hostname; } catch (e) {}
       var byline = extracted.author ? "By " + extracted.author + " · " + displayHost : displayHost + " · via " + res.via;
-      openArticle(extracted.title, displayHost, byline, extracted.text, extracted.clutterRemoved || 0);
+      // v1.6.1 (d): the extraction's title is the page URL itself
+      // when the fetched page carries no usable title (Jina markdown
+      // for a BBC article) — the headline the visitor tapped (or the
+      // title they typed when pasting) is the real title then. A
+      // real extracted title always wins; a URL-like one never does.
+      var displayTitle = extracted.title;
+      if ((!displayTitle || /^https?:\/\//i.test(displayTitle) || displayTitle === openUrl) && fallback && (fallback.title || "").trim()) displayTitle = fallback.title.trim();
+      openArticle(displayTitle, displayHost, byline, extracted.text, extracted.clutterRemoved || 0);
     }).catch(function (err) {
       setBusy(btn, false, "▶  Listen");
       if (parseXUrl(url)) {
@@ -2990,6 +3235,9 @@
   // banner mirrors the same label + % as the load box.
   function warmupBanner() { return $("warmupBanner"); }
   function showKittenLoading(label, pct) {
+    // v1.6.1 (f): a loaded voice never shows loading UI — a show
+    // after the model is already here is a leak, not progress.
+    if (kitten.tts) { hideKittenLoading(); return; }
     var box = kittenLoadBox();
     if (box) box.hidden = false;
     var t = kittenLoadText();
@@ -3034,6 +3282,9 @@
     ["kittenLoadRetryBtn", "warmupRetryBtn"].forEach(function (id) { var b = $(id); if (b) b.hidden = true; });
   }
   function showKittenRetryBtns() {
+    // v1.6.1 (f): the 30s stuck-load timer must never re-show
+    // anything once the voice is loaded.
+    if (kitten.tts) return;
     var lb = $("kittenLoadRetryBtn");
     if (lb && kittenLoadBox() && !kittenLoadBox().hidden) lb.hidden = false;
     var wb = $("warmupRetryBtn");
@@ -3120,11 +3371,17 @@
   // window.__AURALIS_KITTEN_MOCK, it is used instead of the CDN —
   // that is how QA exercises this path without a 60MB download.
   function ensureKitten(onProgress, opts) {
-    if (kitten.tts) return Promise.resolve(kitten.tts);
+    // v1.6.1 (f): every early resolve hides the loading UI — a
+    // caller that showed the banner (warm-up, retry) and then
+    // resolves here used to leave it up forever while playback
+    // worked (proven in QA: a retry resolving via this branch kept
+    // the banner visible).
+    if (kitten.tts) { hideKittenLoading(); return Promise.resolve(kitten.tts); }
     if (kitten.loading) return kitten.loading;
     if (kitten.failed) return Promise.reject(new Error(kitten.failReason || "Kitten voices could not be loaded."));
     if (typeof window !== "undefined" && window.__AURALIS_KITTEN_MOCK) {
       kitten.tts = window.__AURALIS_KITTEN_MOCK;
+      hideKittenLoading();
       return Promise.resolve(kitten.tts);
     }
     var firstTime = !storeGet("auralis.kitten.seen", false);
@@ -3221,7 +3478,13 @@
     resetKittenFailure();
     var retryOpts = opts || {};
     if (!retryOpts.loadingLabel) retryOpts.loadingLabel = "Retrying the voice download…";
-    return ensureKitten(onProgress, retryOpts);
+    // v1.6.1 (f): a retry that resolves through an early-return
+    // path in ensureKitten (mock / already-loaded) hides the banner
+    // here too — the button handler itself never hides anything,
+    // so it must not rely on the load path to do it.
+    var p = ensureKitten(onProgress, retryOpts);
+    p.then(function () { if (kitten.tts && !kitten.loading) hideKittenLoading(); }, function () {});
+    return p;
   }
   // v1.4.6: warm up the voice in the background, on page load —
   // NOT on first Play. The model used to download on first Play,
@@ -5500,10 +5763,13 @@
         refreshXFeed: refreshXFeed,
         xThreadTextFromFetched: xThreadTextFromFetched,
         extractBrowseLinks: extractBrowseLinks,
+        cleanBrowseTitle: cleanBrowseTitle,
         browseLinkOk: browseLinkOk,
         browseSite: browseSite,
         browseFavs: browseFavs,
         saveBrowseFavs: saveBrowseFavs,
+        removeBrowseFav: removeBrowseFav,
+        xFeedStale: function () { return xFeedStale; },
         xFeedItems: function () { return xFeedItems; },
         xFeedDown: function () { return xFeedDown; },
         appState: state
