@@ -40,6 +40,111 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.6.2 release notes (local build — not yet pushed/released)
+
+**Auralis v1.6.2 — URL fragments, headline glue, X-feed loading, stale toast**
+
+Why: the v1.6.1 audit (Nov 25, 2026) found four more defects — a BBC
+article paragraph began mid-sentence with a raw URL fragment, several
+BBC headlines still merged with their summaries, the X feed flashed
+"down" while a fetch was still running and started every reload from
+an empty list, and the "Ready — press play to listen." toast sat over
+the player while the article was already playing. All four are fixed
+here; nothing else changes.
+
+- **(a) X feed never says "down" while loading + last-good cache:**
+  `refreshXFeed()` clears the previous fetch's down-notes/stale flag
+  and re-renders *immediately* after setting `xFeedLoading = true`,
+  so the loading state renders synchronously instead of the down-state
+  sitting on screen for the whole fetch. While loading with zero items
+  the feed says "Loading your feed… Fetching the latest public posts.";
+  with posts already on screen it says "Showing posts from … —
+  refreshing…". Per-handle down-notes render only after a fetch
+  settles. A reload also shows the previous posts at once from a
+  `localStorage` last-good cache (`auralis.xFeedCache.v1`, `{ savedAt,
+  items }`, capped at 50 items, still-followed handles only) with a
+  "Showing posts from Nov 25, 5:42 PM." note, then the live refresh
+  runs behind them. A successful refresh rewrites the cache and clears
+  the note; a failed refresh never rewrites it, so its timestamp can't
+  claim posts are fresher than they are. A corrupt cache is ignored,
+  never fatal. QA: `qa20/test-part1.js` (40/40).
+- **(b) Article text has no URL fragments:** the root cause was
+  `splitSentences()` — its `/[^.!?]+[.!?]+…/` match silently dropped
+  the whole head of a sentence when a dot inside a URL failed the
+  whitespace lookahead ("The US government also announced a raft of
+  new tariffs" vanished, leaving "uk/news/articles/c893r9ke5p97o) on
+  countries…" as a "sentence" no URL regex could recognise). It is now
+  a lossless boundary scan: the join of the returned parts is the
+  input, so a URL dot can never eat text. Belt and braces in
+  `cleanSpokenText()`: bare path fragments ("uk/news/articles/…",
+  "news/articles/…") are stripped as whitespace-delimited tokens
+  only (two or more "/" segments, last segment 4+ chars — numeric
+  dates and "and/or" never match), markdown-link leftovers ("[label]("
+  and orphan ")" from a URL with parens) are cleaned, and a headless
+  clause left behind ("on countries and trading partners…") is dropped
+  as the fragment it is. Guarded so real prose survives: a sentence
+  that merely mentions a URL in passing keeps its words, and only
+  fragments — never complete sentences — are stripped. `extractFromHtml()`
+  now also parses Jina Reader markdown as markdown paragraphs (header
+  sliced, blank lines kept as paragraph boundaries) instead of
+  collapsing it to one line, so the dateline, byline, image markdown
+  and credit lines are dropped as their own paragraphs rather than
+  fusing onto the first real sentence. Proven on the REAL BBC article
+  fetched via Jina Nov 25, 2026 — the tariffs sentence is whole ("The
+  US government also announced a raft of new tariffs on countries and
+  trading partners on Wednesday as part of President Donald Trump's
+  flagship trade policy."), all 16 sentences spoken, zero URL shards
+  in any sentence or paragraph. QA: `qa20/test-part2.js`.
+- **(c) Headlines no longer glue to their summaries:** two new passes
+  in `cleanBrowseTitle()`, after the v1.6.1 starter-word split. A
+  REPEAT cut: when the summary re-states the headline's words at the
+  join, cut before the repeat — capitalised 2-word phrases, then the
+  title's first word ("Williams exceeded F1 cost cap by £627,000
+  Williams "unintentially" broke…" → "Williams exceeded F1 cost cap
+  by £627,000"; "…say star Hunter Schafer and series creator Hunter
+  Schafer and co-stars say…" → "…say star Hunter Schafer and series
+  creator"), walking back over the first half of a name ("Daniel
+  Dubois"). A NEW-SENTENCE cut: when the summary starts a fresh
+  sentence after a complete headline — a proper name + finite verb
+  ("…she could not let go Jane Collins had all but given up…" →
+  "She spent decades as an FBI agent and this is the case she could
+  not let go"), a name inside the first five words ("…last NFL game
+  Veteran quarterback Aaron Rodgers may have played…"), or an
+  all-caps acronym opening ("…in Manchester WBO heavyweight world
+  champion Daniel Dubois will make…" → "Dubois to defend title
+  against Parker in Manchester"). Guards keep real headlines whole:
+  the head must be complete (no stop-word ending, no word that needs
+  a noun after it — "played last" never cuts), the tail must be a
+  complete sentence, and a capitalised head-last-word is allowed only
+  for acronym-led tails — so "…targeted to test Earth's defences…",
+  "…host Top Gear…" and "…against Netanyahu The Israeli PM…" stay
+  whole. Proven on the REAL BBC front page fetched via Jina Nov 25,
+  2026 (29 headlines, zero duplicates). Known-remaining: "Confusion
+  and anger - Yoro red card rescinded, but row goes on Leny Yoro's…"
+  (head ends on stop word "on") and "Macy's postpones Thanksgiving
+  parade due to weather Preparations to hold…" (summary opens with a
+  common noun, no name+verb pattern) stay glued rather than miscut.
+  QA: `qa20/test-part2.js`.
+- **(d) The "Ready" toast clears when playback starts:** `hideToast()`
+  (clears the toast and cancels its auto-hide timer) is called from
+  `playAudioElement()` the moment audio actually starts — the "Ready —
+  press play to listen." toast used to sit over the player for its
+  whole 3.2 s while the article was already playing. QA:
+  `qa20/test-part1.js`.
+- **Kept from v1.6.1:** Browse + X-feed fixes, KittenTTS Nano 0.8,
+  cached synthesis, one audio path, warm-up, honest slow state, Trim
+  silence default ON, chrome-trim, Retry download that really retries,
+  real Download ZIP link (now `v1.6.2.zip`).
+- **Service worker:** cache bumped to `auralis-v1.6.2`. Footer shows
+  `v1.6.2`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.6.2
+git push origin v1.6.2
+gh release create v1.6.2 --title "v1.6.2 — URL fragments, headline glue, X-feed loading, stale toast" --notes-file /tmp/auralis-v1.6.2-release-notes.md
+```
+
 ### v1.6.1 release notes (local build — not yet pushed/released)
 
 **Auralis v1.6.1 — Browse + X-feed fixes from the Nov 25 cloud-browser audit**

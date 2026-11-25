@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.6.1";
+  var APP_VERSION = "v1.6.2";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -64,6 +64,17 @@
     // play to listen." x2, "Making the preview sounds…" x2) — the
     // duplication a browser check flagged three times in a row.
     // #srStatus is gone; one message, one place.
+  }
+
+  // v1.6.2 (d): hide the toast at once, cancelling its auto-hide
+  // timer. Playback hides it the moment audio actually starts
+  // (playAudioElement) — the "Ready — press play to listen." toast
+  // used to sit over the player for its whole 3.2s while the
+  // article was already playing.
+  function hideToast() {
+    var t = $("toast"); if (!t) return;
+    clearTimeout(toastTimer);
+    t.classList.remove("show");
   }
 
   // v1.4.4: an optional second action (extraLabel/extraFn) — the
@@ -218,13 +229,37 @@
 
   /* ---------------- text model: paragraphs -> sentences -> words ---------------- */
   function splitSentences(text) {
-    // Split on sentence-ending punctuation followed by space + capital/quote,
-    // keeping abbreviations reasonably intact. The punctuation must be
-    // followed by whitespace or end-of-text — otherwise a dot inside a
-    // token (www.example.com, hello@example.org, U.S.A.) would be torn
-    // into fragments that no URL/email stripper can recognise afterwards.
-    var parts = text.match(/[^.!?]+[.!?]+["'”)]*(?=\s+|$)|[^.!?]+$/g) || [text];
-    return parts.map(function (p) { return p.trim(); }).filter(Boolean);
+    // Split on sentence-ending punctuation followed by whitespace or
+    // end-of-text, keeping abbreviations reasonably intact. The
+    // punctuation must be followed by whitespace or end-of-text —
+    // otherwise a dot inside a token (www.example.com,
+    // hello@example.org, U.S.A.) would be torn into fragments that
+    // no URL/email stripper can recognise afterwards.
+    // v1.6.2 (b): LOSSLESS by construction. The old implementation
+    // matched sentences with /[^.!?]+[.!?]+…/ — when a dot inside a
+    // URL failed the whitespace lookahead ("…(https://www.bbc.co.uk/…"),
+    // the match simply STARTED after that dot, silently dropping the
+    // whole head of the sentence ("The US government also announced
+    // a raft of new tariffs") and leaving the tail
+    // ("uk/news/articles/c893r9ke5p97o) on countries…") as a
+    // "sentence" no URL regex could ever recognise. This version
+    // scans for boundaries and keeps every character between them:
+    // the join of the returned parts is the input (modulo trimming).
+    // A chunk with no letters/digits (a lone "." left by a cut) is
+    // never a sentence and is dropped, as before.
+    var t = String(text || "");
+    if (!t.trim()) return [];
+    var out = [], start = 0;
+    var re = /[.!?]+["'”)]*(?=\s+|$)/g, m;
+    while ((m = re.exec(t)) !== null) {
+      var end = m.index + m[0].length;
+      var chunk = t.slice(start, end).trim();
+      if (chunk && /[A-Za-z0-9]/.test(chunk)) out.push(chunk);
+      start = end;
+    }
+    var rest = t.slice(start).trim();
+    if (rest && /[A-Za-z0-9]/.test(rest)) out.push(rest);
+    return out;
   }
 
   function buildModel(title, source, byline, bodyText) {
@@ -556,6 +591,34 @@
   }
 
   function extractFromHtml(html, pageUrl) {
+    var rawText = String(html || "");
+    // v1.6.2 (b): Jina Reader markdown — "Title: … URL Source: …
+    // Published Time: … Markdown Content:" header, then blank-line
+    // paragraphs. The header is metadata, never article text, and
+    // the blank lines ARE the paragraph boundaries — so parse it as
+    // markdown paragraphs directly, instead of collapsing the whole
+    // thing to one line (where the dateline, byline, image markdown
+    // and credit fuse onto the first real sentence). Image-only
+    // lines, bylines and datelines are dropped here; a bare credit
+    // line ("Spencer Platt / Getty Images") is left for the radar +
+    // chrome-trim, which already know it. Title stays the page URL:
+    // Jina markdown carries no <title>, and the Browse headline (or
+    // the URL, honestly) is applied by the caller.
+    // (Why now: the old lossy splitSentences used to eat this header
+    // as a side effect of dropping text before URL dots; the lossless
+    // splitter keeps it, so the cut must be explicit.)
+    var jinaHead = rawText.match(/^\s*Title:[\s\S]{0,2000}?Markdown Content:/);
+    if (jinaHead) {
+      var jinaBody = rawText.slice(jinaHead[0].length);
+      var jinaParas = jinaBody.split(/\n\s*\n/).map(function (p) { return p.replace(/\s+/g, " ").trim(); }).filter(Boolean);
+      var jinaKept = jinaParas.filter(function (p) {
+        if (isClutterParagraph(p)) return false;
+        if (/^!\[Image/.test(p)) return false; // image-only markdown line
+        if (/^\s*by\s+\S.{1,60}$/i.test(p) && !/[.!?]/.test(p)) return false; // byline line
+        return true;
+      });
+      return { title: pageUrl, author: "", text: jinaKept.join("\n\n"), clutterRemoved: jinaParas.length - jinaKept.length, paragraphs: jinaKept.length };
+    }
     var parser = new DOMParser();
     var doc = parser.parseFromString(html, "text/html");
     // Remove everything that is not the article itself: nav, menus,
@@ -922,6 +985,58 @@
     } while (t !== prev);
     return t;
   }
+  // v1.6.2 (b): URL-fragment artefacts. splitSentences is lossless
+  // now, so a markdown link normally survives whole until the
+  // MD-link cut above — but a fragment can still arrive intact
+  // (pasted text, a proxy's mangled link, a URL whose ")" broke the
+  // MD-link match): a bare path with no scheme and no domain
+  // ("uk/news/articles/c893r9ke5p97o", "news/articles/…"), or a
+  // markdown-link leftover ("[text](" with the URL already gone).
+  // Only WHITESPACE-DELIMITED TOKENS are stripped — never a
+  // complete sentence — and only tokens with two or more "/"
+  // segments, at least one alphabetic segment, and a last segment of
+  // 4+ characters (a real prose token never looks like that).
+  // Numeric dates ("10/12/2026") and "and/or" (one slash) never
+  // match. A trailing "." is never eaten: it is the sentence's own
+  // terminator, and eating it would fuse two sentences.
+  function stripUrlFragments(t, removed) {
+    var out = String(t || "");
+    out = out.replace(/(^|[\s(\["'])(\/?(?:[A-Za-z0-9][A-Za-z0-9_.\-]*\/){2,}[A-Za-z0-9_\-](?:[A-Za-z0-9_.\-]*[A-Za-z0-9_\-])?\)?)/g, function (m, pre, tok) {
+      if (/^\d{1,2}\/\d{1,2}\/\d{2,4}\)?$/.test(tok)) return m;
+      if (!/[A-Za-z]/.test(tok)) return m;
+      var last = tok.replace(/^\//, "").replace(/\)$/, "").split("/").pop();
+      if (!last || last.length < 4) return m;
+      removed.push(tok);
+      return pre;
+    });
+    // A markdown link whose URL is already gone ("[label](") —
+    // keep the label, drop the brackets and paren. "[label] (…)"
+    // (space before the paren) is real prose and never matches.
+    out = out.replace(/\[([^\]]+)\]\(\s*/g, function (m, label) { removed.push(m); return label; });
+    return out;
+  }
+  // Orphan closers left by a stripped link ("…(film))" — the MD cut
+  // keeps the label and leaves the ")"). Drop ")" beyond the "("
+  // count (from the end first) and likewise for "]" — balanced
+  // parentheses/brackets are never touched.
+  function stripUnbalancedClosers(s) {
+    var t = String(s || "");
+    var opens = (t.match(/\(/g) || []).length, closes = (t.match(/\)/g) || []).length;
+    while (closes > opens) {
+      var i = t.lastIndexOf(")");
+      if (i < 0) break;
+      t = t.slice(0, i) + t.slice(i + 1);
+      closes--;
+    }
+    var ob = (t.match(/\[/g) || []).length, cb = (t.match(/\]/g) || []).length;
+    while (cb > ob) {
+      var j = t.lastIndexOf("]");
+      if (j < 0) break;
+      t = t.slice(0, j) + t.slice(j + 1);
+      cb--;
+    }
+    return t;
+  }
   function cleanSpokenText(text) {
     var removed = [];
     var t = String(text || "");
@@ -973,6 +1088,8 @@
     cut(SPOKEN_WWW_RE);
     cut(SPOKEN_EMAIL_RE);
     cut(SPOKEN_DOMAIN_RE);
+    // v1.6.2 (b): bare URL-fragment artefacts (see stripUrlFragments).
+    t = stripUrlFragments(t, removed);
     INLINE_CHROME_RES.forEach(cut);
     t = t.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.!?;:])/g, "$1").trim();
     var kept = [], dropped = [];
@@ -984,6 +1101,16 @@
       // cut ("Read more — the meeting starts…").
       s2 = s2.replace(/^[—–-]\s*/, "").trim();
       if (!s2) { dropped.push(s); return; }
+      // v1.6.2 (b): orphan closers from a stripped link ("Foo)").
+      s2 = stripUnbalancedClosers(s2);
+      if (!s2) { dropped.push(s); return; }
+      // v1.6.2 (b): a headless clause left by a stripped URL fragment
+      // ("on countries and trading partners…" — the sentence's head
+      // went with the link). A real sentence starts with a capital;
+      // a clause starting with a lowercase preposition/conjunction
+      // is a fragment, never prose. Dropped, not silently lost — it
+      // lands in `dropped` and shows under "Show removed".
+      if (/^(on|in|at|to|for|with|from|of|by|and|but|or|as)\s/.test(s2)) { dropped.push(s2); return; }
       // v1.6.1 (e): image-credit fragments (Jina/BBC): strip a
       // leading credit + file-extension artefact fused onto a real
       // sentence, drop a sentence that IS only a credit, drop
@@ -1795,6 +1922,139 @@
       }
       if (cut > 0) s = s.slice(0, cut).trim();
     }
+    // v1.6.2 (c): NEW-SENTENCE cut. The summary starts a fresh
+    // sentence after a complete headline, but with no starter word
+    // ("…she could not let go Jane Collins had all but given up…",
+    // "…last NFL game Veteran quarterback Aaron Rodgers may have
+    // played…", "…without charge Mahdi Tunsi, 26, was taken…"). A
+    // cut is valid only when the head is a complete headline
+    // (>= 20 chars, >= 4 words, last word lowercase and not a stop
+    // word) and the tail is a complete sentence (first sentence
+    // >= 20 chars, ends with terminal punctuation) that opens with a
+    // proper name — either two capitalised words followed within a
+    // few words by a finite verb or a comma ("Jane Collins had…",
+    // "Raheem Sterling was…", "Mahdi Tunsi, 26, was…"), or a name
+    // inside the first five words followed by a finite verb
+    // ("Veteran quarterback Aaron Rodgers may…"). The guards are
+    // what keep real headlines whole: "…targeted to test Earth's
+    // defences…" never cuts (its tail has no terminal punctuation
+    // and no name); "…host Top Gear…" never cuts (the head ends on
+    // capitalised "Top"); "…against Netanyahu The Israeli PM…"
+    // never cuts (the head ends on capitalised "Netanyahu").
+    (function () {
+      var VERBS = "had|has|have|was|were|is|are|will|would|could|may|might|did|does|said|says|say|faces|faced|makes|made|takes|took|gives|gave|sees|saw|comes|came|goes|went|begins|began|announces|announced|reveals|revealed|shows|showed|claims|claimed|warns|warned";
+      function cleanWord(w) { return String(w || "").replace(/[,.;:!?)"”'’]+$/, ""); }
+      function isVerb(w) { return new RegExp("^(?:" + VERBS + ")$", "i").test(cleanWord(w)); }
+      var re = /\b[A-Z][\w'’\-]*\b/g, m;
+      while ((m = re.exec(s)) !== null) {
+        var cutAt = m.index;
+        if (cutAt < 20) continue;
+        var head = s.slice(0, cutAt).replace(/["“‘\s]+$/, "").trim();
+        var tail = s.slice(cutAt).replace(/^["“‘\s]+/, "").trim();
+        if (head.length < 20 || head.split(/\s+/).length < 4) continue;
+        var lastWord = head.split(/\s+/).pop();
+        if (BROWSE_TITLE_STOP_END.test(lastWord)) continue;
+        // A head ending on a word that needs a noun after it ("played
+        // last", "announces new") is never complete — the tail's
+        // acronym ("NFL game…") is the missing object, not a new
+        // sentence. Blocks the (c) acronym cut from miscutting
+        // "…may have played last NFL game Veteran…".
+        if (/^(last|next|new|final|only|former|latest|main|prime|chief|senior|junior|annual|daily|weekly|every|each|any|own|same|other|whole|full|major|top|big)$/i.test(lastWord.replace(/['\u2019"\u201c\u201d.,;:!?]+$/, ""))) continue;
+        // (c) below allows a capitalised last word, but only when the
+        // tail opens with an all-caps acronym (WBO / NBA / …) —
+        // otherwise the head must end lowercase, or "…host Top
+        // Gear…" miscuts.
+        var tailOpensAcronym = /^[A-Z]{2,}\b/.test(tail);
+        if (!/^[a-z]/.test(lastWord) && !tailOpensAcronym) continue;
+        var tailFirstSent = tail.match(/^[^.!?…]+[.!?…]/);
+        if (!tailFirstSent || tailFirstSent[0].trim().length < 20 || tailFirstSent[0].indexOf(" ") === -1) continue;
+        var words = tailFirstSent[0].trim().split(/\s+/);
+        var ok = false;
+        var om = tailFirstSent[0].trim().match(/^([A-Z][\w'’\-]+)\s+([A-Z][\w'’\-]+(?:['’]s)?)/);
+        if (om && ["The", "A", "An"].indexOf(om[1]) === -1) {
+          for (var wi = 2; wi < Math.min(6, words.length); wi++) {
+            if (isVerb(words[wi]) || /,/.test(words[wi])) { ok = true; break; }
+          }
+        }
+        if (!ok) {
+          for (var ni = 0; ni < Math.min(4, words.length - 1); ni++) {
+            var w1 = cleanWord(words[ni]), w2 = cleanWord(words[ni + 1]);
+            if (/^[A-Z][\w'’\-]+$/.test(w1) && /^[A-Z][\w'’\-]+$/.test(w2) && ["The", "A", "An"].indexOf(w1) === -1) {
+              for (var vj = ni + 2; vj < Math.min(ni + 5, words.length); vj++) {
+                if (isVerb(words[vj])) { ok = true; break; }
+              }
+              if (ok) break;
+            }
+          }
+        }
+        // (c) tail opens with an all-caps acronym, then a name + verb
+        // ("WBO heavyweight world champion Daniel Dubois will
+        // make…"). The acronym is what licenses the capitalised
+        // head-last-word above; a plain capitalised tail word does not.
+        if (!ok && tailOpensAcronym) {
+          for (var n2 = 0; n2 < Math.min(7, words.length - 1); n2++) {
+            var x1 = cleanWord(words[n2]), x2 = cleanWord(words[n2 + 1]);
+            if (/^[A-Z][\w'’\-]+$/.test(x1) && /^[A-Z][\w'’\-]+$/.test(x2) && ["The", "A", "An"].indexOf(x1) === -1) {
+              for (var v2 = n2 + 2; v2 < Math.min(n2 + 5, words.length); v2++) {
+                if (isVerb(words[v2])) { ok = true; break; }
+              }
+              if (ok) break;
+            }
+          }
+        }
+        if (!ok) continue;
+        s = head;
+        return;
+      }
+    })();
+    // v1.6.2 (c): REPEAT cut. The summary re-states the headline's
+    // words at the join ("Williams exceeded F1 cost cap by £627,000
+    // Williams "unintentially" broke…", "…say star Hunter Schafer
+    // and series creator Hunter Schafer and co-stars say…") — cut
+    // before the repeat. Candidates: every capitalised 2-word phrase
+    // in the string, then the title's first word. A cut is valid only
+    // when the head is a complete headline (>= 15 chars, has a
+    // space, does not end on a stop word) and the tail is a complete
+    // sentence of its own (first sentence >= 20 chars, ends with
+    // terminal punctuation). When the repeat is the second half of a
+    // name ("Daniel Dubois" — first word "Dubois" repeats), walk back
+    // over immediately-preceding capitalised words so the cut falls
+    // before the full name.
+    (function () {
+      function escRe(x) { return String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+      var cands = [];
+      var bi = s.match(/[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)/g) || [];
+      bi.forEach(function (b) { if (cands.indexOf(b) === -1) cands.push(b); });
+      var firstWord = s.split(/\s+/)[0].replace(/["“‘\(\[]+$/, "");
+      if (/^[A-Z][\w'’\-]{2,}$/.test(firstWord) && cands.indexOf(firstWord) === -1) cands.push(firstWord);
+      for (var ci = 0; ci < cands.length; ci++) {
+        var cand = cands[ci];
+        var occ = [];
+        var ore = new RegExp("\\b" + escRe(cand) + "\\b", "g"), om;
+        while ((om = ore.exec(s)) !== null) occ.push(om.index);
+        if (occ.length < 2) continue;
+        var cutAt = occ[1];
+        // Walk back over ONE immediately-preceding capitalised word
+        // (the first half of a name: "Daniel" before "Dubois") —
+        // but only when the word before THAT is lowercase, so the
+        // walk never eats the headline's own last word ("…against
+        // Netanyahu The Israeli…" must not become "…against").
+        var back = s.slice(0, cutAt).match(/([A-Z][\w'’\-]+)\s+$/);
+        if (back) {
+          var beforeBack = s.slice(0, cutAt - back[0].length);
+          var prevWord = beforeBack.match(/([A-Za-z][\w'’\-]*)\s*$/);
+          if (!prevWord || !/^[A-Z]/.test(prevWord[1])) cutAt = cutAt - back[0].length;
+        }
+        var head = s.slice(0, cutAt).replace(/["“‘\s]+$/, "").trim();
+        var tail = s.slice(cutAt).replace(/^["“‘\s]+/, "").trim();
+        if (head.length < 15 || head.indexOf(" ") === -1) continue;
+        if (BROWSE_TITLE_STOP_END.test(head.split(/\s+/).pop())) continue;
+        var tailFirstSent = tail.match(/^[^.!?…]+[.!?…]/);
+        if (!tailFirstSent || tailFirstSent[0].trim().length < 20 || tailFirstSent[0].indexOf(" ") === -1) continue;
+        s = head;
+        return;
+      }
+    })();
     // "Headline. Summary sentence." glued with a real period: cut
     // after the first sentence when it alone is a complete headline
     // (>= 15 chars, has a space). Abbreviation dots ("U.S.") can
@@ -1893,6 +2153,53 @@
   var xFeedDown = []; // [{ handle, detail }] — handles whose mirrors are all down
   var xFeedStale = false; // v1.6.1: true while showing last-good items after a failed refresh
   var xFeedLoading = false;
+  // v1.6.2 (a): last-good feed cache — a reload shows the previous
+  // posts at once (with their time) instead of an empty list while
+  // the live refresh runs behind them. Best-effort only: a corrupt
+  // or unreadable cache is ignored, never allowed to break the feed.
+  var X_FEED_CACHE_KEY = "auralis.xFeedCache.v1";
+  var X_FEED_CACHE_MAX_ITEMS = 50;
+  var xFeedCacheAt = null; // ms epoch the on-screen items were cached (null = live-fresh)
+  function formatCacheTime(ms) {
+    try {
+      var d = new Date(ms);
+      if (isNaN(d.getTime())) return "";
+      return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    } catch (e) { return ""; }
+  }
+  function saveXFeedCache(items) {
+    try {
+      var clean = (items || []).slice(0, X_FEED_CACHE_MAX_ITEMS).map(function (it) {
+        return { handle: it.handle, author: it.author, retweet: !!it.retweet, text: it.text, link: it.link, date: it.date || null, via: it.via, sourceLabel: it.sourceLabel };
+      });
+      localStorage.setItem(X_FEED_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), items: clean }));
+    } catch (e) { /* cache is best-effort — never break the feed over it */ }
+  }
+  function loadXFeedCache() {
+    var raw = null;
+    try { raw = localStorage.getItem(X_FEED_CACHE_KEY); } catch (e) { return null; }
+    if (!raw) return null;
+    var data = null;
+    try { data = JSON.parse(raw); } catch (e) { return null; }
+    if (!data || typeof data.savedAt !== "number" || !Array.isArray(data.items)) return null;
+    var items = data.items.filter(function (it) {
+      return it && typeof it.text === "string" && it.text && typeof it.link === "string" && typeof it.handle === "string";
+    });
+    if (!items.length) return null;
+    return { savedAt: data.savedAt, items: items };
+  }
+  // Fill the feed from the cache (still-followed handles only).
+  // Returns true when cached posts are now on screen.
+  function restoreXFeedCache() {
+    var cached = loadXFeedCache();
+    if (!cached) return false;
+    var follows = xFollows();
+    var items = cached.items.filter(function (it) { return follows.indexOf(it.handle) !== -1; });
+    if (!items.length) return false;
+    xFeedItems = items;
+    xFeedCacheAt = cached.savedAt;
+    return true;
+  }
 
   function renderXFollows() {
     var row = $("xFollowChips");
@@ -1951,6 +2258,35 @@
     var status = $("xFeedStatus");
     if (status) {
       status.innerHTML = "";
+      // v1.6.2 (a): the down-state must NEVER show while a fetch is
+      // still in flight. A fresh load used to flash "down" for the
+      // whole fetch, because the first render ran before the refresh
+      // set xFeedLoading — and the refresh only re-rendered when the
+      // fetch settled. While loading with nothing to show, say so
+      // honestly; with posts already on screen, say the feed is
+      // refreshing instead.
+      if (xFeedLoading && !xFeedItems.length) {
+        var loading = el("div", "feed-loading");
+        loading.appendChild(el("strong", null, "Loading your feed… "));
+        loading.appendChild(document.createTextNode("Fetching the latest public posts."));
+        status.appendChild(loading);
+      } else if (xFeedLoading && xFeedItems.length) {
+        var refreshing = el("div", "feed-cached");
+        refreshing.appendChild(el("strong", null, xFeedCacheAt
+          ? "Showing posts from " + formatCacheTime(xFeedCacheAt) + " — refreshing…"
+          : "Refreshing your feed… "));
+        status.appendChild(refreshing);
+      }
+      // v1.6.2 (a): cached note — the posts on screen came from the
+      // last good fetch (a previous visit), not a live one yet.
+      // Cleared by a successful refresh (xFeedCacheAt = null) and
+      // superseded by the stale note after a failed one.
+      if (!xFeedLoading && !xFeedStale && xFeedCacheAt && xFeedItems.length) {
+        var cached = el("div", "feed-cached");
+        cached.appendChild(el("strong", null, "Showing posts from " + formatCacheTime(xFeedCacheAt) + ". "));
+        cached.appendChild(document.createTextNode("Refresh in a bit for the latest."));
+        status.appendChild(cached);
+      }
       // v1.6.1: stale note when the list on screen is last-good
       // items kept through a failed refresh.
       if (xFeedStale && xFeedItems.length) {
@@ -1959,12 +2295,17 @@
         stale.appendChild(document.createTextNode("Try Refresh in a bit."));
         status.appendChild(stale);
       }
-      xFeedDown.forEach(function (d) {
-        var note = el("div", "feed-down");
-        note.appendChild(el("strong", null, "@" + d.handle + " — this source is down right now. "));
-        note.appendChild(document.createTextNode("Both public mirrors failed (" + d.detail + "). Your other follows still load — try Refresh in a bit. Nothing is bypassed."));
-        status.appendChild(note);
-      });
+      // Per-handle down-notes only once a fetch has settled — never
+      // mid-flight (they are cleared when a refresh starts, so a
+      // note from the last fetch can never linger over a live one).
+      if (!xFeedLoading) {
+        xFeedDown.forEach(function (d) {
+          var note = el("div", "feed-down");
+          note.appendChild(el("strong", null, "@" + d.handle + " — this source is down right now. "));
+          note.appendChild(document.createTextNode("Both public mirrors failed (" + d.detail + "). Your other follows still load — try Refresh in a bit. Nothing is bypassed."));
+          status.appendChild(note);
+        });
+      }
       if (!xFeedItems.length && xFollows().length && !xFeedLoading) {
         var all = el("div", "feed-down");
         all.appendChild(el("strong", null, "The X feed is down right now. "));
@@ -1985,13 +2326,23 @@
     var follows = xFollows();
     renderXFollows();
     if (!follows.length) {
-      xFeedItems = []; xFeedDown = []; xFeedStale = false;
+      xFeedItems = []; xFeedDown = []; xFeedStale = false; xFeedCacheAt = null;
       renderXFeed();
       return Promise.resolve([]);
     }
     xFeedLoading = true;
+    // v1.6.2 (a): last fetch's down-notes and stale flag are stale
+    // the moment a new refresh starts — clear them so no old
+    // down-state can linger over the live fetch.
+    xFeedDown = [];
+    xFeedStale = false;
     var btn = $("xRefreshBtn");
     setBusy(btn, true, "Refreshing…");
+    // v1.6.2 (a): render AT ONCE — the old code only re-rendered
+    // when the fetch settled, so the first render's down-state sat
+    // on screen for the whole fetch. This render shows the loading
+    // state (or the cached posts + a refreshing note).
+    renderXFeed();
     var previous = xFeedItems.slice();
     var settled = follows.map(function (h) {
       return fetchXFeedForHandle(h).then(function (r) { return { ok: true, r: r }; })
@@ -2020,6 +2371,12 @@
       xFeedItems = mergeXFeedItems(good.concat(keptResults));
       xFeedDown = down;
       xFeedStale = keptCount > 0;
+      // v1.6.2 (a): a refresh that brought back posts refreshes the
+      // cache too, so the next load shows them at once — and the
+      // on-screen list is live-fresh now, so the cached note goes.
+      // A failed refresh never rewrites the cache: its kept posts
+      // are older than the timestamp would claim.
+      if (good.length && xFeedItems.length) { saveXFeedCache(xFeedItems); xFeedCacheAt = null; }
       renderXFeed();
       return xFeedItems;
     });
@@ -2150,10 +2507,17 @@
       toast("Saved " + hostOf(url) + " as a favourite.");
     });
     renderXFollows();
-    renderXFeed();
     renderBrowseFavs();
     renderBrowseList(null);
+    // v1.6.2 (a): restore the cached posts BEFORE the first render,
+    // so a reload shows them at once with their time — and let
+    // refreshXFeed do the first render itself: it renders the
+    // loading/cached state immediately. The old unconditional
+    // renderXFeed() here ran with xFeedLoading still false and
+    // flashed the down-state on every load with follows.
+    restoreXFeedCache();
     if (xFollows().length) refreshXFeed();
+    else renderXFeed();
   }
 
   function fetchWithTimeout(url, ms) {
@@ -3673,7 +4037,15 @@
     routeAudioElement(a);
     try {
       var p = a.play();
-      return (p && p.then) ? p : Promise.resolve();
+      // v1.6.2 (d): playback has actually started — clear any stale
+      // toast (e.g. "Ready — press play to listen.") instead of
+      // leaving it over the player while the article plays. A
+      // refused play() keeps the toast, so a failure message shown
+      // by the caller still has somewhere to go — and nothing
+      // re-shows the Ready toast once playback has begun.
+      if (p && p.then) return p.then(function () { hideToast(); });
+      hideToast();
+      return Promise.resolve();
     } catch (e) { return Promise.reject(e); }
   }
   // v1.5.0: Trim silence toggle (default ON). Kitten speaks with
@@ -5764,6 +6136,7 @@
         xThreadTextFromFetched: xThreadTextFromFetched,
         extractBrowseLinks: extractBrowseLinks,
         cleanBrowseTitle: cleanBrowseTitle,
+        cleanSpokenText: cleanSpokenText, // v1.6.2 (b): unit-test seam
         browseLinkOk: browseLinkOk,
         browseSite: browseSite,
         browseFavs: browseFavs,
@@ -5772,6 +6145,10 @@
         xFeedStale: function () { return xFeedStale; },
         xFeedItems: function () { return xFeedItems; },
         xFeedDown: function () { return xFeedDown; },
+        // v1.6.2: loading / cache seams for the harness.
+        xFeedLoading: function () { return xFeedLoading; },
+        xFeedCacheAt: function () { return xFeedCacheAt; },
+        xFeedCacheKey: X_FEED_CACHE_KEY,
         appState: state
       };
     }

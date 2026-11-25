@@ -295,8 +295,10 @@ button.chip:hover { border-color: var(--gold); }
   border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px;
   font-size: .92rem; color: var(--ivory-dim);
 }
-/* v1.6.1: stale note — last-good posts kept through a failed refresh. */
-.feed-stale {
+/* v1.6.1: stale note — last-good posts kept through a failed refresh.
+   v1.6.2: the loading and cached-posts notes share the same quiet
+   gold treatment (a loading state is not an error). */
+.feed-stale, .feed-loading, .feed-cached {
   border: 1px solid rgba(201,169,106,.55); background: rgba(201,169,106,.10);
   border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px;
   font-size: .92rem; color: var(--ivory-dim);
