@@ -32,6 +32,8 @@
     </a>
     <nav class="site-nav" aria-label="Main">
       <a href="#get-the-app">Get the app</a>
+      <a href="#xfeed">X feed</a>
+      <a href="#browse">Browse</a>
       <a href="#library">Library</a>
       <a href="#voices">Voices</a>
       <a href="#ai-apps">AI Apps</a>
@@ -75,7 +77,7 @@
       <button class="btn btn-ghost btn-small" type="button" id="pasteClipboardBtn" hidden>📋 Paste link from clipboard</button>
 
       <div class="hero-actions">
-        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.5.1.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
+        <a class="btn btn-gold btn-download" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.6.0.zip" id="downloadBtn" title="Download Auralis as a ZIP file — or install it as an app below">⬇ Download Auralis</a>
         <button class="btn btn-ghost" type="button" id="pasteTextBtn">✎ Paste text</button>
         <button class="btn btn-ghost" type="button" id="uploadBtn">⇪ Upload a file</button>
         <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm" hidden>
@@ -97,6 +99,53 @@
         <p>Three original samples — no copyrighted text.</p>
       </div>
       <div class="sample-grid" id="sampleGrid"><!-- filled by app.js --></div>
+    </div>
+  </section>
+
+  <!-- X FEED (v1.6.0) — follow public X accounts, hear their posts.
+       No sign-in, no key. Posts are read via public mirrors
+       (FxTwitter RSS first, Nitter instances as fallback) and the
+       source is shown on every post. -->
+  <section class="samples" id="xfeed" aria-label="X feed">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Your X feed</h2>
+        <p>Follow public accounts — hear their posts read aloud. <span id="xFeedCount"></span></p>
+      </div>
+      <p class="muted">Public posts only, read via public mirrors (FxTwitter first, Nitter if needed) — no login, no key, no official X API. Protected or deleted posts can't be read, and Auralis never tries to bypass a block.</p>
+      <form class="feed-form" id="xFollowForm" novalidate>
+        <label class="sr-only" for="xHandleInput">X handle to follow</label>
+        <input id="xHandleInput" type="text" autocomplete="off" spellcheck="false" placeholder="@NASA — an X handle you follow" maxlength="16">
+        <button class="btn btn-gold" type="button" id="xAddBtn">＋ Follow</button>
+        <button class="btn btn-ghost" type="button" id="xRefreshBtn">↻ Refresh feed</button>
+      </form>
+      <div class="chip-row" id="xFollowChips" aria-label="Accounts you follow"></div>
+      <p class="empty-note" id="xFeedEmpty">Nothing followed yet. Add an X handle above — for example <strong>@NASA</strong> — and its latest public posts will appear here, newest first. Tap <strong>▶ Listen</strong> on any post to hear it (and the whole thread, when there is one).</p>
+      <div id="xFeedStatus" aria-live="polite"></div>
+      <div class="feed-list" id="xFeedList"></div>
+    </div>
+  </section>
+
+  <!-- BROWSE (v1.6.0) — pick a site, get its headlines, tap to listen.
+       Public, mostly-static pages only; paywalls, login walls and
+       blocked sites fail honestly, never bypassed. No live browsing. -->
+  <section class="samples" id="browse" aria-label="Browse sites">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Browse a site</h2>
+        <p>Pick a news site — get its headlines, tap one to listen.</p>
+      </div>
+      <p class="muted">Auralis fetches the site's front page through the same public reader proxies as an article link, and lists its story headlines. Works with public, mostly-static pages — paywalled, login-walled or script-heavy homepages will say so honestly instead of pretending.</p>
+      <form class="feed-form" id="browseForm" novalidate>
+        <label class="sr-only" for="browseUrlInput">Site address to browse</label>
+        <input id="browseUrlInput" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="bbc.com/news — a site address">
+        <button class="btn btn-gold" type="button" id="browseBtn">Browse</button>
+      </form>
+      <div class="chip-row" id="browseFavs" aria-label="Favourite sites"></div>
+      <p class="browse-result-head" id="browseResultHead" hidden></p>
+      <p class="empty-note" id="browseEmpty">No headlines yet. Try <strong>BBC News</strong> above, or type any news site's front-page address. Headlines appear here — tap one and Auralis reads that article aloud.</p>
+      <div class="browse-list" id="browseList"></div>
+      <button class="btn btn-ghost btn-small" type="button" id="browseSaveFavBtn" hidden>＋ Save this site as a favourite</button>
     </div>
   </section>
 
@@ -281,7 +330,7 @@
             <li>Unzip the folder it downloads.</li>
             <li>Double-click <strong>index.html</strong> — Auralis opens in your browser.</li>
           </ol>
-          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.5.1.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
+          <a class="btn btn-gold btn-block" id="zipDownloadBtn" href="https://github.com/moretoexplore1234/auralis-reader/archive/refs/tags/v1.6.0.zip" rel="noopener">⬇ Download Auralis files (ZIP) — the app's code, for your computer</a>
           <p class="muted" style="margin-top:10px">Every version, with notes: <a href="https://github.com/moretoexplore1234/auralis-reader/releases" target="_blank" rel="noopener">GitHub Releases</a> · Source code: <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">github.com/moretoexplore1234/auralis-reader</a></p>
         </div>
       </div>
@@ -481,9 +530,11 @@
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.5.1</span></span>
+    <span>© 2026 Auralis — Read Anything Aloud · Free forever · MIT License · <span id="appVersion">v1.6.0</span></span>
     <nav aria-label="Footer">
       <a href="#how">How it works</a>
+      <a href="#xfeed">X feed</a>
+      <a href="#browse">Browse</a>
       <a href="#library">Library</a>
       <a href="#ai-apps">AI Apps</a>
       <a href="https://github.com/moretoexplore1234/auralis-reader" target="_blank" rel="noopener">GitHub</a>

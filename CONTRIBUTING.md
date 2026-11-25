@@ -40,6 +40,77 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
+### v1.6.0 release notes (local build — not yet pushed/released)
+
+**Auralis v1.6.0 — X follow-accounts feed + Browse mode**
+
+Why: Carl (Nov 25, ~3:17 PM) asked for both integrations — hear the posts
+of X accounts he follows, and browse a news site's front page for
+headlines to listen to — with no sign-in, no key, no payment, and the
+same honest "this source is down" behaviour as the rest of the app.
+
+- **FEATURE 1 — X feed:** a "Your X feed" section (always visible,
+  nav link added). Add handles with the ＋ Follow box (persisted in
+  localStorage, `auralis.xFollows.v1`); remove with the ✕ on a chip.
+  No default handles — the empty state explains how to add one (e.g.
+  @NASA). Per handle, the feed is fetched from the **FxTwitter RSS**
+  primary (`https://fxtwitter.com/<handle>/feed.xml` — verified live
+  Nov 25, 2026: HTTP 200, ~90 items, full post text in each item's
+  `<description>` CDATA first `<p>`, `<title>` truncated at 140 chars,
+  `<link>` the x.com status URL, `<pubDate>` RFC 822; no CORS headers,
+  so the browser fetch goes through a proxy leg) with a **Nitter
+  fallback** (`<instance>/<handle>/rss`) behind a rotating instance
+  list (netbub.com, catsarch.com, privacyredirect.com). Nitter was
+  verified the same day to have NO working instance (netbub 403
+  "Gandalf — You shall not pass!", catsarch 429, privacyredirect 403),
+  so every instance is treated as untrusted until a live fetch+parse
+  with ≥1 item passes at runtime; the last instance that worked is
+  tried first (`auralis.xFeed.nitterInstance.v1`), and when all
+  mirrors are down the handle shows an honest "this source is down
+  right now" state. Nothing depends on Nitter being up. RSS legs:
+  direct, then the raw-preserving proxies (AllOrigins, Codetabs),
+  then Jina Reader last — Jina rewrites XML to markdown, which is
+  still parseable (`### [title](link)` + date line per item, titles
+  truncated). All followed handles merge into one list, newest first,
+  deduped by post link, each item showing handle, post text, date and
+  its source (FxTwitter / Nitter + instance). Tapping **▶ Listen**
+  reads the WHOLE thread through the existing play flow (Kitten voice
+  + trim silence + chrome-trim, in-tap audio unlock): fetchXPost
+  (api.fx/vx thread parts in order) first, then the post URL through
+  the existing proxy chain with the thread's posts extracted in
+  order, then the RSS item's own text — which is always there, so a
+  tap never dead-ends. Presented honestly as "read public posts via
+  public mirrors", source shown on each item.
+- **FEATURE 2 — Browse:** a "Browse a site" section (always visible,
+  nav link added). Type a site URL or tap a favourite (persisted in
+  `auralis.browseFavs.v1`, seeded with **BBC News**
+  `https://www.bbc.com/news` — verified Nov 25, 2026: Jina 200 with
+  21 distinct `/news/articles/` links; AllOrigins flaky 500-then-200,
+  so the proxy-chain retry matters. AP News is dead on both legs the
+  same day and is NOT seeded). The front/section page is fetched
+  through the EXISTING proxy chain (`fetchArticle`), its article links
+  extracted (same-site, article-like, deduped by URL and title, title
+  from anchor text; nav/account pages, section listings, media files
+  and ads dropped; links inside `<main>`/`<article>` preferred),
+  and shown as a clean headline list. Tapping a headline calls
+  `readUrl` — the existing reader flow. Paywalls, login walls,
+  JS-rendered homepages and fully-blocked sites fail honestly with the
+  existing blocked-state UI (both fallback buttons — "Open the site"
+  and "Paste text instead" — never a bypass). No live iframe browsing.
+- **Kept from v1.5.1:** KittenTTS Nano 0.8, cached synthesis, one audio
+  path, warm-up, honest slow state, Trim silence default ON, chrome-trim,
+  Retry download that really retries, real Download ZIP link (now
+  `v1.6.0.zip`).
+- **Service worker:** cache bumped to `auralis-v1.6.0`. Footer shows
+  `v1.6.0`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.6.0
+git push origin v1.6.0
+gh release create v1.6.0 --title "v1.6.0 — X follow-accounts feed + Browse mode" --notes-file /tmp/auralis-v1.6.0-release-notes.md
+```
+
 ### v1.5.1 release notes (local build — not yet pushed/released)
 
 **Auralis v1.5.1 — Chrome-trim + a Retry download that really retries**

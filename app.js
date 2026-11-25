@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.5.1";
+  var APP_VERSION = "v1.6.0";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -1156,6 +1156,772 @@
       if (isNaN(d.getTime())) return "";
       return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     } catch (e) { return ""; }
+  }
+
+  /* ---------------- v1.6.0 — X follow-accounts feed + Browse mode ----
+   * Two new ways in, same reader out. Both reuse the existing
+   * machinery and rules: the proxy chain (fetchArticle), the X-post
+   * reader (fetchXPost / parseXUrl / stripShortLinks), the reader
+   * flow (openArticle with autoplay, so a tap IS the gesture and
+   * the Kitten voice + trim silence + chrome-trim all apply), and
+   * the honest blocked-state UI (both fallback buttons, never a
+   * bypass). No sign-in, no key, no payment, no official X API.
+   *
+   * X FEED: follows are handles the visitor adds, persisted in
+   * localStorage (auralis.xFollows.v1). NO default handles — the
+   * empty state explains how to add one (e.g. @NASA). Per handle:
+   *   PRIMARY — FxTwitter RSS: https://fxtwitter.com/<handle>/feed.xml
+   *     Verified live Nov 25, 2026: HTTP 200, ~90 items, full post
+   *     text in each item's <description> (CDATA HTML, first <p>),
+   *     <title> truncated at 140 chars, <link> the x.com status
+   *     URL, <pubDate> RFC 822. No CORS headers on fxtwitter.com,
+   *     so a browser fetch goes through a proxy leg (below).
+   *   FALLBACK — Nitter-instance RSS: <instance>/<handle>/rss.
+   *     Verified Nov 25, 2026: NO working instance — netbub.com
+   *     403 "Gandalf — You shall not pass!", catsarch.com 429,
+   *     privacyredirect.com 403, moomoo.me / poast.org unreachable.
+   *     So every instance is UNTRUSTED until a live fetch+parse
+   *     with >=1 item passes at runtime; the list rotates, the
+   *     last instance that worked is tried first (stored in
+   *     auralis.xFeed.nitterInstance.v1), and when all mirrors are
+   *     down the handle shows an honest "this source is down right
+   *     now" state. Nothing in this feature depends on Nitter
+   *     being up — FxTwitter is the working primary.
+   * RSS fetch legs (fetchRssText): direct, then the raw-preserving
+   * proxies from CFG.FETCH_PROXIES (AllOrigins, Codetabs), then
+   * Jina Reader LAST — Jina rewrites XML to markdown, so its text
+   * is parsed as markdown (parseJinaFeedMarkdown: ### [title](link)
+   * + date line per item, truncated titles). Raw XML is preferred
+   * because only it carries the full post text. A leg that returns
+   * a block page is a failed leg, same as in fetchArticle (v1.4.5).
+   * Tapping a post reads the WHOLE thread: fetchXPost (api.fx/vx,
+   * thread + conversation parts in order) first; if that fails,
+   * the post URL through the existing proxy chain (fetchArticle)
+   * with the thread's posts extracted in order; if that fails too,
+   * the RSS item's own text — which is always there, so a tap
+   * never dead-ends. The source (FxTwitter / Nitter + instance)
+   * is shown on every item, and the feed says plainly it reads
+   * public posts via public mirrors.
+   *
+   * BROWSE: the visitor types a site URL (or taps a favourite,
+   * persisted in auralis.browseFavs.v1, seeded with BBC News —
+   * verified Nov 25, 2026: Jina 200 with 21 distinct
+   * /news/articles/ links; AllOrigins flaky 500-then-200, so the
+   * proxy-chain retry matters. AP News is dead on both legs the
+   * same day — do NOT seed it). The front/section page is fetched
+   * through the EXISTING proxy chain (fetchArticle), its article
+   * links extracted (same-site, article-like, deduped, title from
+   * anchor text, nav/ads/section pages dropped), and shown as a
+   * clean headline list. Tapping a headline calls readUrl — the
+   * existing reader flow. Paywalls, login walls, JS-rendered
+   * homepages and fully-blocked sites fail honestly with the
+   * existing blocked-state UI (both fallback buttons, never a
+   * bypass). No live iframe browsing. */
+  var X_FEED_KEY = "auralis.xFollows.v1";
+  var X_FEED_INSTANCE_KEY = "auralis.xFeed.nitterInstance.v1";
+  var BROWSE_FAVS_KEY = "auralis.browseFavs.v1";
+  var NITTER_INSTANCES = [
+    "https://nitter.netbub.com",
+    "https://nitter.catsarch.com",
+    "https://nitter.privacyredirect.com"
+  ];
+  var BROWSE_SEED_FAVS = [{ name: "BBC News", url: "https://www.bbc.com/news" }];
+
+  // An X handle, normalised: no @, no whitespace, lower-case.
+  // X handles are 1–15 chars of letters, digits and underscore.
+  // Returns the handle or "" when it isn't one.
+  function normalizeXHandle(raw) {
+    var h = String(raw || "").trim().replace(/^@+/, "").trim().toLowerCase();
+    return /^[a-z0-9_]{1,15}$/.test(h) ? h : "";
+  }
+  function xFollows() {
+    var list = storeGet(X_FEED_KEY, null);
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (h) { return typeof h === "string" && normalizeXHandle(h) === h; });
+  }
+  function saveXFollows(list) {
+    var clean = [];
+    (list || []).forEach(function (h) {
+      var n = normalizeXHandle(h);
+      if (n && clean.indexOf(n) === -1) clean.push(n);
+    });
+    storeSet(X_FEED_KEY, clean);
+    return clean;
+  }
+  function browseFavs() {
+    var list = storeGet(BROWSE_FAVS_KEY, null);
+    if (!Array.isArray(list)) return BROWSE_SEED_FAVS.slice();
+    return list.filter(function (f) { return f && f.url; }).map(function (f) {
+      return { name: String(f.name || "").slice(0, 60) || hostOf(f.url), url: String(f.url) };
+    });
+  }
+  function saveBrowseFavs(list) {
+    var clean = [], seen = {};
+    (list || []).forEach(function (f) {
+      if (!f || !f.url) return;
+      var url = String(f.url);
+      if (seen[url]) return;
+      seen[url] = true;
+      clean.push({ name: String(f.name || "").slice(0, 60) || hostOf(url), url: url });
+    });
+    storeSet(BROWSE_FAVS_KEY, clean);
+    return clean;
+  }
+  function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return String(url || ""); }
+  }
+
+  // Fetch raw text for an RSS URL through the same public proxies as
+  // fetchArticle — but raw-preserving legs first: only raw XML carries
+  // the full post text, while Jina rewrites it to (parseable, but
+  // title-truncated) markdown. Returns { via, text }.
+  function fetchRssText(url) {
+    var rawLegs = [], jinaLegs = [];
+    (CFG.FETCH_PROXIES || []).forEach(function (p) {
+      try {
+        if (/jina/i.test(p.name || "")) jinaLegs.push({ name: p.name, url: p.url(url) });
+        else rawLegs.push({ name: p.name, url: p.url(url) });
+      } catch (e) { /* skip bad proxy config */ }
+    });
+    var attempts = [{ name: "direct", url: url }].concat(rawLegs).concat(jinaLegs);
+    var chain = Promise.reject(new Error("start"));
+    attempts.forEach(function (a) {
+      chain = chain.catch(function () {
+        return fetchWithTimeout(a.url, 15000).then(function (resp) {
+          if (!resp.ok) throw new Error(a.name + " returned HTTP " + resp.status);
+          return resp.text().then(function (text) {
+            if (isBlockPageText(text)) throw new Error(a.name + " returned a block page");
+            return { via: a.name, text: text };
+          });
+        });
+      });
+    });
+    return chain;
+  }
+  // Decode the entities an RSS field may carry (&lt; &gt; &amp; …).
+  function decodeRssEntities(s) {
+    return String(s || "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
+  }
+  // Plain text out of an HTML fragment (an FxTwitter <description>):
+  // the FIRST <p> is the post itself; later <p>s are media. No <p>
+  // at all → the whole fragment's text.
+  function rssDescriptionText(html) {
+    var raw = String(html || "").trim();
+    if (!raw) return "";
+    try {
+      var doc = new DOMParser().parseFromString(raw, "text/html");
+      var first = doc.querySelector("p");
+      var t = (first ? first.textContent : doc.body.textContent) || "";
+      return t.replace(/\s+/g, " ").trim();
+    } catch (e) {
+      return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
+  }
+  // One RSS <item> block → { text, link, date (ms or null), guid }.
+  // Text is the FULLER of the description text and the title:
+  // FxTwitter truncates <title> at 140 chars but puts the whole
+  // post in <description>; Nitter puts the whole post in <title>
+  // and may carry no description at all.
+  function rssItemFromFields(title, desc, link, pubDate, guid) {
+    var fromDesc = rssDescriptionText(decodeRssEntities(desc));
+    var fromTitle = decodeRssEntities(title).replace(/\s+/g, " ").trim();
+    var text = fromDesc.length >= fromTitle.length ? fromDesc : fromTitle;
+    var date = null;
+    if (pubDate) {
+      var ms = Date.parse(String(pubDate).trim());
+      if (!isNaN(ms)) date = ms;
+    }
+    return { text: text, link: String(link || "").trim(), date: date, guid: String(guid || link || "").trim() };
+  }
+  function rssField(block, tag) {
+    var re = new RegExp("<" + tag + ">(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</" + tag + ">", "i");
+    var m = String(block || "").match(re);
+    return m ? m[1].trim() : "";
+  }
+  // Regex fallback for environments whose DOMParser can't do XML
+  // (the browser path below is primary — this keeps the parse
+  // working in the jsdom harness and anywhere else XML parsing is
+  // unavailable). Returns items or null when there's no <item>.
+  function parseRssXmlRegex(text) {
+    var items = [], m;
+    var itemRe = /<item>([\s\S]*?)<\/item>/gi;
+    while ((m = itemRe.exec(String(text || ""))) !== null) {
+      var block = m[1];
+      var it = rssItemFromFields(rssField(block, "title"), rssField(block, "description"), rssField(block, "link"), rssField(block, "pubDate"), rssField(block, "guid"));
+      if (it.text && it.link) items.push(it);
+    }
+    return items.length ? items : null;
+  }
+  // Parse RSS 2.0 XML into [{ text, link, date, guid }], newest
+  // first is the caller's job. Returns null when the text isn't
+  // RSS (a block page, Jina markdown, an empty feed).
+  function parseRssXml(text) {
+    var raw = String(text || "");
+    if (raw.indexOf("<item") === -1 && raw.indexOf("<item>") === -1) return null;
+    try {
+      var doc = new DOMParser().parseFromString(raw, "text/xml");
+      var err = doc.getElementsByTagName("parsererror");
+      if (err && err.length) return parseRssXmlRegex(raw);
+      var nodes = doc.getElementsByTagName("item");
+      if (!nodes.length) return parseRssXmlRegex(raw);
+      var items = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        function tag(name) {
+          var e = n.getElementsByTagName(name);
+          return e.length ? (e[0].textContent || "") : "";
+        }
+        var it = rssItemFromFields(tag("title"), tag("description"), tag("link"), tag("pubDate"), tag("guid"));
+        if (it.text && it.link) items.push(it);
+      }
+      return items.length ? items : null;
+    } catch (e) {
+      return parseRssXmlRegex(raw);
+    }
+  }
+  // Parse the markdown Jina Reader returns for an RSS URL:
+  //   ### [title…](https://x.com/<handle>/status/<id>)
+  //   [https://x.com/…](https://x.com/…)
+  //   Wed, 25 Nov 2026 20:01:29 GMT
+  // per item. Titles are truncated (140 chars) — the full text
+  // comes from the tap, not from here. Returns items or null.
+  function parseJinaFeedMarkdown(text) {
+    var raw = String(text || "");
+    if (raw.indexOf("### [") === -1) return null;
+    var items = [];
+    var blocks = raw.split(/^### \[/m).slice(1);
+    blocks.forEach(function (b) {
+      var head = b.match(/^([^\]]+)\]\((https?:\/\/[^)\s]+)\)/);
+      if (!head) return;
+      var link = head[2];
+      var date = null;
+      var dm = b.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+[^\n]+/m);
+      if (dm) {
+        var ms = Date.parse(dm[0].trim());
+        if (!isNaN(ms)) date = ms;
+      }
+      var title = decodeRssEntities(head[1]).replace(/\s+/g, " ").trim();
+      if (title && link) items.push({ text: title, link: link, date: date, guid: link });
+    });
+    return items.length ? items : null;
+  }
+  // Parse one fetched feed body, XML first (full text), Jina
+  // markdown second (truncated titles). Returns items or null.
+  function parseFeedBody(text) {
+    return parseRssXml(text) || parseJinaFeedMarkdown(text);
+  }
+  // The post's author is the handle in its x.com status URL
+  // (a followed account's feed can carry another account's post
+  // via retweet — the AUTHOR is who the item is by, not the feed).
+  function xAuthorFromLink(link) {
+    var x = link ? parseXUrl(link) : null;
+    return x ? x.user : "";
+  }
+  // Merge every handle's items into one list, newest first:
+  // deduped by link (the same post can appear under two handles
+  // via retweets), undated items last in feed order.
+  function mergeXFeedItems(perHandle) {
+    var seen = {}, all = [];
+    (perHandle || []).forEach(function (r) {
+      (r.items || []).forEach(function (it) {
+        var key = it.link || it.guid || it.text;
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        all.push({
+          handle: r.handle, author: xAuthorFromLink(it.link) || r.handle,
+          text: it.text, link: it.link, date: it.date || null,
+          via: r.via, sourceLabel: r.sourceLabel
+        });
+      });
+    });
+    all.sort(function (a, b) {
+      if (a.date == null && b.date == null) return 0;
+      if (a.date == null) return 1;
+      if (b.date == null) return -1;
+      return b.date - a.date;
+    });
+    return all;
+  }
+  // Fetch one handle's feed. Resolves { handle, items, via,
+  // sourceLabel } — via is "FxTwitter" or "Nitter" and sourceLabel
+  // is what the UI shows ("FxTwitter" / "Nitter · nitter.netbub.com").
+  // Rejects with an Error listing what was tried, so the UI can say
+  // honestly that the source is down right now. Nitter instances
+  // are tried in order — last instance that worked first — and an
+  // instance only counts as working when a live fetch+parse yields
+  // at least one item; a 403/429/empty reply moves on to the next.
+  function fetchXFeedForHandle(handle) {
+    var h = normalizeXHandle(handle);
+    if (!h) return Promise.reject(new Error("not a handle"));
+    var tried = [];
+    function tryFx() {
+      return fetchRssText("https://fxtwitter.com/" + h + "/feed.xml").then(function (res) {
+        var items = parseFeedBody(res.text);
+        if (!items) throw new Error("FxTwitter returned no posts");
+        return { handle: h, items: items, via: "FxTwitter", sourceLabel: "FxTwitter" };
+      }).catch(function (err) {
+        tried.push("FxTwitter (" + (err && err.message ? err.message : "failed") + ")");
+        return tryNitter(0);
+      });
+    }
+    function nitterOrder() {
+      var last = null;
+      try { last = storeGet(X_FEED_INSTANCE_KEY, null); } catch (e) {}
+      var order = NITTER_INSTANCES.slice();
+      if (last && order.indexOf(last) !== -1) {
+        order.splice(order.indexOf(last), 1);
+        order.unshift(last);
+      }
+      return order;
+    }
+    function tryNitter(i) {
+      var order = nitterOrder();
+      if (i >= order.length) {
+        var err = new Error("All X mirrors are down right now: " + tried.join("; "));
+        err.tried = tried;
+        throw err;
+      }
+      var base = order[i];
+      return fetchRssText(base + "/" + h + "/rss").then(function (res) {
+        var items = parseFeedBody(res.text);
+        if (!items) throw new Error("no posts");
+        try { storeSet(X_FEED_INSTANCE_KEY, base); } catch (e) {}
+        return { handle: h, items: items, via: "Nitter", sourceLabel: "Nitter · " + hostOf(base) };
+      }).catch(function (err) {
+        tried.push(hostOf(base) + " (" + (err && err.message ? err.message : "failed") + ")");
+        return tryNitter(i + 1);
+      });
+    }
+    return tryFx();
+  }
+  // Thread text out of a proxy-chain fetch of an x.com status URL
+  // (fetchArticle's { text }): Jina markdown — strip the header,
+  // drop headings / bare-link lines, keep the post lines in order;
+  // raw HTML — the normal extractor. Best-effort: returns "" when
+  // nothing readable comes back, and the caller falls back to the
+  // RSS item text it already has.
+  function xThreadTextFromFetched(text) {
+    var t = String(text || "");
+    if (!t) return "";
+    var parts = [];
+    if (/Markdown Content:/.test(t) || /^Title:/m.test(t)) {
+      var idx = t.indexOf("Markdown Content:");
+      var body = idx !== -1 ? t.slice(idx + "Markdown Content:".length) : t;
+      body.split(/\n/).forEach(function (line) {
+        var l = line.trim();
+        if (!l || l.indexOf("###") === 0 || l.indexOf("![") === 0) return;
+        if (/^\[https?:\/\/[^\]]*\]\(https?:\/\/[^)]*\)\s*$/.test(l)) return; // bare-link line
+        if (/^https?:\/\/\S+$/.test(l)) return;
+        var clean = stripShortLinks(l);
+        if (clean && parts.indexOf(clean) === -1) parts.push(clean);
+      });
+    } else {
+      try {
+        var ex = extractFromHtml(t, "");
+        (ex.text || "").split(/\n\s*\n/).forEach(function (p) {
+          var clean = stripShortLinks(p.trim());
+          if (clean && parts.indexOf(clean) === -1) parts.push(clean);
+        });
+      } catch (e) { /* not HTML either — fall through empty */ }
+    }
+    return parts.join("\n\n");
+  }
+  // Open one feed item in the reader, whole thread when there is
+  // one. The tap is the gesture: openArticle({autoplay:true})
+  // unlocks the audio context in the tap and playFree uses the
+  // visitor's chosen voice with trim silence + chrome-trim, exactly
+  // like any other article. Route 1: fetchXPost (api.fx/vx —
+  // thread + conversation parts in order). Route 2: the post URL
+  // through the existing proxy chain, thread posts extracted in
+  // order. Route 3 (never fails): the RSS item's own text.
+  function readXFeedItem(item) {
+    var handle = item.author || item.handle || "";
+    var link = item.link || "";
+    var via = item.sourceLabel || item.via || "FxTwitter";
+    function openFromText(body, parts, bylineVia) {
+      var title = body.length > 90 ? body.slice(0, 90).replace(/\s+\S*$/, "") + "…" : body;
+      var date = item.date ? formatXDate(new Date(item.date).toISOString()) : "";
+      var byline = "By @" + handle + (date ? " · " + date : "") +
+        " · X post · via " + bylineVia +
+        (parts > 1 ? " · " + parts + " parts" : " · 1 post") +
+        (link ? " · Original: " + link : "");
+      openArticle(title, "X · @" + handle, byline, body, 0, undefined, { autoplay: true });
+    }
+    function openRssText() {
+      var body = stripShortLinks(item.text || "");
+      if (wordsOf(body) < 5) {
+        showStatus("error", "Couldn't read that post",
+          "Every route failed — the post may be deleted, protected, or from an account that limits readers. <strong>Auralis never bypasses login walls.</strong>",
+          "Open the original post", function () { openExternal(link); },
+          "Paste text instead", openPasteModal);
+        return;
+      }
+      openFromText(body, 1, via + " (feed text)");
+    }
+    var x = link ? parseXUrl(link) : null;
+    if (!x) { openRssText(); return; }
+    showStatus("", "Fetching the X post…", "Reading the full post — long posts and threads, start to finish — via a public mirror. No login needed, and nothing is bypassed: protected or deleted posts can't be read.");
+    fetchXPost(x).then(function (post) {
+      var body = post.parts.join("\n\n");
+      openFromText(body, post.parts.length, post.via);
+    }).catch(function () {
+      fetchArticle(link).then(function (res) {
+        var thread = xThreadTextFromFetched(res.text);
+        if (wordsOf(thread) >= 5) {
+          var parts = thread.split(/\n\s*\n/).filter(Boolean);
+          openFromText(thread, parts.length, res.via);
+        } else {
+          openRssText();
+        }
+      }).catch(function () { openRssText(); });
+    });
+  }
+
+  /* ---------------- Browse mode (v1.6.0) ---------------- */
+  // Article-like links only: nav, account pages, section listings,
+  // media files and ads never reach the headline list.
+  var BROWSE_DROP_PATHS = [
+    /^\/(login|signin|sign-in|signup|sign-up|register|search|account|cart|checkout|subscribe|newsletter|sitemap|privacy|terms|cookie|cookies|contact|about|help|support|settings|profile|advertis|careers|jobs|press|legal)(\/|$)/i,
+    /\/(tag|category|author|topics?|section)\//i,
+    /\/search(\/|$)/i,
+    /\/videos?\//i, // video pages have little readable text — articles only
+    /\/live\//i // live-text pages are a rolling feed, not an article
+  ];
+  var BROWSE_DROP_EXTS = /\.(jpg|jpeg|png|gif|webp|svg|css|js|pdf|mp4|webm|mp3|wav|zip|xml|rss|ico|woff2?)($|\?)/i;
+  var BROWSE_SECTION_WORDS = ["news", "sport", "sports", "business", "tech", "technology", "culture", "world", "politics", "opinion", "video", "videos", "live", "weather", "entertainment", "science", "health", "education", "money", "style", "travel", "food", "local", "uk", "us", "articles"];
+  var BROWSE_DROP_TITLES = ["home", "menu", "search", "sign in", "log in", "subscribe", "newsletter", "privacy policy", "terms of use", "cookie policy", "contact us", "about us", "advertise", "skip to content", "back to top", "read more", "share", "listen", "watch"];
+  // One candidate link → normalised same-site article URL, or "".
+  // Title must read like a headline (>= 15 chars, has a space, not
+  // a nav label); URL must be same-site (www-insensitive), not a
+  // section/listing page, not a media file.
+  function browseLinkOk(title, href, baseUrl) {
+    var t = String(title || "").replace(/\s+/g, " ").trim();
+    if (t.length < 15 || t.indexOf(" ") === -1) return "";
+    if (BROWSE_DROP_TITLES.indexOf(t.toLowerCase()) !== -1) return "";
+    if (/^(read more|share|listen|watch)\b/i.test(t)) return "";
+    var u;
+    try { u = new URL(href, baseUrl); } catch (e) { return ""; }
+    if (!/^https?:$/.test(u.protocol)) return "";
+    var base;
+    try { base = new URL(baseUrl); } catch (e) { return ""; }
+    if (u.hostname.replace(/^www\./, "") !== base.hostname.replace(/^www\./, "")) return "";
+    u.hash = "";
+    var path = u.pathname;
+    if (path === "/" || path === "") return "";
+    if (BROWSE_DROP_EXTS.test(path + u.search)) return "";
+    if (BROWSE_DROP_PATHS.some(function (re) { return re.test(path); })) return "";
+    var segs = path.split("/").filter(Boolean);
+    if (segs.length === 1 && BROWSE_SECTION_WORDS.indexOf(segs[0].toLowerCase()) !== -1) return "";
+    if (/\/$/.test(path) && segs.length <= 1) return "";
+    return u.href;
+  }
+  // Extract headline links from a fetched front/section page — raw
+  // HTML (AllOrigins/Codetabs/direct) or Jina markdown. HTML: links
+  // inside <main>/<article> first (the story list, not the chrome);
+  // if that yields fewer than 5, all page links. Markdown: [t](u)
+  // links. Same-site, article-like, deduped by URL and by title,
+  // page order, capped at 40.
+  function extractBrowseLinks(text, baseUrl) {
+    var raw = String(text || "");
+    var found = [];
+    var seenUrl = {}, seenTitle = {};
+    function add(title, href) {
+      var url = browseLinkOk(title, href, baseUrl);
+      if (!url) return;
+      var key = url.replace(/\/$/, "");
+      if (seenUrl[key]) return;
+      var tk = String(title).replace(/\s+/g, " ").trim().toLowerCase();
+      if (seenTitle[tk]) return;
+      seenUrl[key] = true; seenTitle[tk] = true;
+      found.push({ title: String(title).replace(/\s+/g, " ").trim(), url: url });
+    }
+    var isHtml = /<[a-z][\s\S]*>/i.test(raw) && raw.indexOf("<a ") !== -1;
+    if (isHtml) {
+      try {
+        var doc = new DOMParser().parseFromString(raw, "text/html");
+        var scopes = doc.querySelectorAll("main, article");
+        var anchors = [];
+        if (scopes.length) {
+          scopes.forEach(function (s) { Array.prototype.forEach.call(s.querySelectorAll("a[href]"), function (a) { anchors.push(a); }); });
+        }
+        if (anchors.length < 5) anchors = Array.prototype.slice.call(doc.querySelectorAll("a[href]"));
+        anchors.forEach(function (a) {
+          var href = a.getAttribute("href") || "";
+          var title = (a.textContent || "").replace(/\s+/g, " ").trim();
+          if (title) add(title, href);
+        });
+      } catch (e) { /* unparseable HTML — fall through to markdown scan */ }
+    }
+    if (!isHtml || found.length < 5) {
+      var mdRe = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, m;
+      while ((m = mdRe.exec(raw)) !== null) add(m[1], m[2]);
+      // Line-based pass: Jina wraps some stories as image links
+      // ([![alt](img)](article)), and the regex above matches the
+      // IMAGE link first, hiding the article URL — 4 of BBC's 21
+      // /news/articles/ links were lost that way (Nov 25, 2026).
+      // Scan each line for article URLs and take the line's own
+      // text as the title (link text kept, image refs dropped).
+      // Dedupe by URL means this only adds what the regex missed.
+      raw.split(/\n/).forEach(function (line) {
+        var urlRe = /\((https?:\/\/[^)\s]+)\)/g, um;
+        while ((um = urlRe.exec(line)) !== null) {
+          var title = line
+            .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+            .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+            .replace(/#{1,6}\s*/g, " ")
+            .replace(/[*_`]/g, "")
+            .replace(/\s+/g, " ").trim();
+          if (title.length > 140) title = title.slice(0, 140).replace(/\s+\S*$/, "") + "…";
+          if (title) add(title, um[1]);
+        }
+      });
+    }
+    return found.slice(0, 40);
+  }
+  // Fetch a site's front/section page through the EXISTING proxy
+  // chain and extract its headlines. Resolves { site, via, finalUrl,
+  // links }. Rejects with the fetch error (the caller shows the
+  // honest blocked-state UI with both fallback buttons).
+  function browseSite(siteUrl) {
+    var url = String(siteUrl || "").trim();
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    var parsed;
+    try { parsed = new URL(url); } catch (e) { return Promise.reject(new Error("That link doesn't look right")); }
+    if (!/^https?:$/.test(parsed.protocol)) return Promise.reject(new Error("Only web pages can be browsed"));
+    return fetchArticle(url).then(function (res) {
+      var links = extractBrowseLinks(res.text || "", res.finalUrl || url);
+      return { site: url, via: res.via, finalUrl: res.finalUrl || url, links: links };
+    });
+  }
+
+  /* ---------------- X feed + Browse UI (v1.6.0) ---------------- */
+  // Feed items keep their fetch state so a tap can read them even
+  // when the list re-renders (a re-render replaces the DOM nodes).
+  var xFeedItems = [];
+  var xFeedDown = []; // [{ handle, detail }] — handles whose mirrors are all down
+  var xFeedLoading = false;
+
+  function renderXFollows() {
+    var row = $("xFollowChips");
+    if (!row) return;
+    row.innerHTML = "";
+    xFollows().forEach(function (h) {
+      var chip = el("span", "chip", "@" + h);
+      var x = el("button", "chip-x", "✕");
+      x.type = "button";
+      x.setAttribute("aria-label", "Stop following @" + h);
+      x.addEventListener("click", function () {
+        saveXFollows(xFollows().filter(function (f) { return f !== h; }));
+        renderXFollows();
+        refreshXFeed();
+        toast("Stopped following @" + h + ".");
+      });
+      chip.appendChild(x);
+      row.appendChild(chip);
+    });
+    var empty = $("xFeedEmpty");
+    if (empty) empty.hidden = xFollows().length > 0;
+  }
+  function renderXFeed() {
+    var list = $("xFeedList");
+    if (!list) return;
+    list.innerHTML = "";
+    xFeedItems.forEach(function (item) {
+      var card = el("article", "feed-item");
+      var head = el("p", "feed-item-handle", "@" + (item.author || item.handle));
+      var date = el("span", "feed-item-date", item.date ? formatXDate(new Date(item.date).toISOString()) : "date unknown");
+      head.appendChild(document.createTextNode(" · "));
+      head.appendChild(date);
+      card.appendChild(head);
+      var text = item.text || "";
+      var shown = text.length > 280 ? text.slice(0, 280).replace(/\s+\S*$/, "") + "…" : text;
+      card.appendChild(el("p", "feed-item-text", shown));
+      var meta = el("p", "feed-item-meta");
+      meta.appendChild(document.createTextNode("via " + (item.sourceLabel || item.via || "FxTwitter") + " · "));
+      var open = document.createElement("a");
+      open.href = item.link || ("https://x.com/" + item.handle);
+      open.target = "_blank"; open.rel = "noopener noreferrer";
+      open.textContent = "Open post ↗";
+      meta.appendChild(open);
+      card.appendChild(meta);
+      var btn = el("button", "btn btn-gold btn-small", "▶ Listen");
+      btn.type = "button";
+      btn.addEventListener("click", function () { readXFeedItem(item); });
+      card.appendChild(btn);
+      list.appendChild(card);
+    });
+    var status = $("xFeedStatus");
+    if (status) {
+      status.innerHTML = "";
+      xFeedDown.forEach(function (d) {
+        var note = el("div", "feed-down");
+        note.appendChild(el("strong", null, "@" + d.handle + " — this source is down right now. "));
+        note.appendChild(document.createTextNode("Both public mirrors failed (" + d.detail + "). Your other follows still load — try Refresh in a bit. Nothing is bypassed."));
+        status.appendChild(note);
+      });
+      if (!xFeedItems.length && xFollows().length && !xFeedLoading) {
+        var all = el("div", "feed-down");
+        all.appendChild(el("strong", null, "The X feed is down right now. "));
+        all.appendChild(document.createTextNode("Every public mirror failed for every account you follow. Try Refresh in a bit — Auralis never bypasses a block, it just waits."));
+        status.appendChild(all);
+      }
+    }
+    var count = $("xFeedCount");
+    if (count) count.textContent = xFeedItems.length ? xFeedItems.length + " post" + (xFeedItems.length === 1 ? "" : "s") + " · newest first" : "";
+  }
+  // Refresh every followed handle in parallel; a handle that fails
+  // keeps its honest down-note while the working handles still
+  // render. Never throws.
+  function refreshXFeed() {
+    var follows = xFollows();
+    renderXFollows();
+    if (!follows.length) {
+      xFeedItems = []; xFeedDown = [];
+      renderXFeed();
+      return Promise.resolve([]);
+    }
+    xFeedLoading = true;
+    var btn = $("xRefreshBtn");
+    setBusy(btn, true, "Refreshing…");
+    var settled = follows.map(function (h) {
+      return fetchXFeedForHandle(h).then(function (r) { return { ok: true, r: r }; })
+        .catch(function (err) { return { ok: false, handle: h, err: err }; });
+    });
+    return Promise.all(settled).then(function (results) {
+      xFeedLoading = false;
+      setBusy(btn, false, "↻ Refresh feed");
+      var good = [], down = [];
+      results.forEach(function (s) {
+        if (s.ok) good.push(s.r);
+        else down.push({ handle: s.handle, detail: (s.err && s.err.tried ? s.err.tried.join("; ") : (s.err && s.err.message ? s.err.message : "failed")) });
+      });
+      xFeedItems = mergeXFeedItems(good);
+      xFeedDown = down;
+      renderXFeed();
+      return xFeedItems;
+    });
+  }
+  function renderBrowseFavs() {
+    var row = $("browseFavs");
+    if (!row) return;
+    row.innerHTML = "";
+    browseFavs().forEach(function (f) {
+      var chip = el("button", "chip chip-btn", f.name);
+      chip.type = "button";
+      chip.title = f.url;
+      chip.addEventListener("click", function () {
+        var input = $("browseUrlInput");
+        if (input) input.value = f.url;
+        browseCurrentSite(f.url);
+      });
+      var x = el("span", "chip-x", "✕");
+      x.setAttribute("aria-label", "Remove favourite " + f.name);
+      x.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        saveBrowseFavs(browseFavs().filter(function (g) { return g.url !== f.url; }));
+        renderBrowseFavs();
+      });
+      chip.appendChild(x);
+      row.appendChild(chip);
+    });
+  }
+  function renderBrowseList(result) {
+    var list = $("browseList");
+    if (!list) return;
+    list.innerHTML = "";
+    var head = $("browseResultHead");
+    if (head) {
+      head.hidden = !result;
+      if (result) head.textContent = result.links.length + " headline" + (result.links.length === 1 ? "" : "s") + " from " + hostOf(result.finalUrl) + " · via " + result.via + " — tap one to listen.";
+    }
+    var saveBtn = $("browseSaveFavBtn");
+    if (saveBtn) saveBtn.hidden = !result;
+    (result ? result.links : []).forEach(function (link) {
+      var row = el("div", "browse-item");
+      var t = el("button", "browse-title", link.title);
+      t.type = "button";
+      t.addEventListener("click", function () { readUrl(link.url); });
+      row.appendChild(t);
+      var host = el("span", "browse-host", hostOf(link.url));
+      row.appendChild(host);
+      list.appendChild(row);
+    });
+    var empty = $("browseEmpty");
+    if (empty) empty.hidden = !!(result && result.links.length);
+  }
+  // Browse the URL in the input (or the one passed in). Failures
+  // use the EXISTING blocked-state UI — both fallback buttons,
+  // never a bypass — exactly like fetchArticleGeneric.
+  function browseCurrentSite(siteUrl) {
+    var url = String(siteUrl || ($("browseUrlInput") ? $("browseUrlInput").value : "") || "").trim();
+    if (!url) { toast("Type a site address first — try bbc.com/news."); return Promise.resolve(null); }
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    var btn = $("browseBtn");
+    setBusy(btn, true, "Fetching…");
+    return browseSite(url).then(function (result) {
+      setBusy(btn, false, "Browse");
+      if (!result.links.length) {
+        showStatus("error", "Couldn't find headlines there",
+          "We reached <strong>" + esc(hostOf(result.finalUrl)) + "</strong> via " + esc(result.via) + ", but couldn't find article links — it may be a script-heavy homepage, mostly images, or a page with no story list. Try another site, or paste an article link directly.",
+          "Open the site", function () { openExternal(result.finalUrl); },
+          "Paste text instead", openPasteModal);
+        renderBrowseList(result);
+        return result;
+      }
+      renderBrowseList(result);
+      safeScrollIntoView($("browseList"));
+      return result;
+    }).catch(function (err) {
+      setBusy(btn, false, "Browse");
+      var blocked = err && err.blockPage;
+      showStatus("error", blocked ? "That site blocked the reader" : "Couldn't reach that site",
+        (blocked
+          ? "The site refused to share its text with a reader (bot protection or an access block). <strong>Auralis never tries to bypass blocks or paywalls.</strong>"
+          : "Every fetch route failed (" + esc(err && err.message ? err.message : "network error") + "). The site may be down, offline, or blocking readers.") +
+        " You can open the site in your browser, or copy an article's text yourself and use <strong>Paste text</strong>.",
+        "Open the site", function () { openExternal(url); },
+        "Paste text instead", openPasteModal);
+      return null;
+    });
+  }
+  function wireXFeedAndBrowse() {
+    var addBtn = $("xAddBtn");
+    var input = $("xHandleInput");
+    function addFollow() {
+      var h = normalizeXHandle(input ? input.value : "");
+      if (!h) { toast("That doesn't look like an X handle — try @NASA (letters, numbers and _ only, up to 15)."); return; }
+      var list = xFollows();
+      if (list.indexOf(h) !== -1) { toast("You're already following @" + h + "."); return; }
+      saveXFollows(list.concat([h]));
+      if (input) input.value = "";
+      renderXFollows();
+      toast("Following @" + h + " — fetching their posts…");
+      refreshXFeed();
+    }
+    if (addBtn) addBtn.addEventListener("click", addFollow);
+    if (input) input.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); addFollow(); } });
+    var refreshBtn = $("xRefreshBtn");
+    if (refreshBtn) refreshBtn.addEventListener("click", function () { refreshXFeed(); });
+    var bBtn = $("browseBtn");
+    if (bBtn) bBtn.addEventListener("click", function () { browseCurrentSite(); });
+    var bInput = $("browseUrlInput");
+    if (bInput) bInput.addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); browseCurrentSite(); } });
+    var saveFav = $("browseSaveFavBtn");
+    if (saveFav) saveFav.addEventListener("click", function () {
+      var url = (bInput ? bInput.value : "").trim();
+      if (!url) return;
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      var favs = browseFavs();
+      if (favs.some(function (f) { return f.url === url; })) { toast("That's already a favourite."); return; }
+      saveBrowseFavs(favs.concat([{ name: hostOf(url), url: url }]));
+      renderBrowseFavs();
+      toast("Saved " + hostOf(url) + " as a favourite.");
+    });
+    renderXFollows();
+    renderXFeed();
+    renderBrowseFavs();
+    renderBrowseList(null);
+    if (xFollows().length) refreshXFeed();
   }
 
   function fetchWithTimeout(url, ms) {
@@ -4291,6 +5057,7 @@
     renderLibrary();
     renderApps();
     renderProviderForm();
+    wireXFeedAndBrowse(); // v1.6.0: X feed + Browse sections
 
     // Restore saved voice prefs.
     var savedVoice = storeGet(LS.voice, {}) || {};
@@ -4718,6 +5485,27 @@
         trimSilence: trimSilence,
         trimSilenceEnabled: trimSilenceEnabled,
         setTrimSilenceEnabled: setTrimSilenceEnabled,
+        // v1.6.0: X feed + Browse seams (pure parsers + the fetch
+        // functions, so the harness drives them with a mocked fetch).
+        normalizeXHandle: normalizeXHandle,
+        xFollows: xFollows,
+        saveXFollows: saveXFollows,
+        parseRssXml: parseRssXml,
+        parseJinaFeedMarkdown: parseJinaFeedMarkdown,
+        parseFeedBody: parseFeedBody,
+        mergeXFeedItems: mergeXFeedItems,
+        fetchRssText: fetchRssText,
+        fetchXFeedForHandle: fetchXFeedForHandle,
+        readXFeedItem: readXFeedItem,
+        refreshXFeed: refreshXFeed,
+        xThreadTextFromFetched: xThreadTextFromFetched,
+        extractBrowseLinks: extractBrowseLinks,
+        browseLinkOk: browseLinkOk,
+        browseSite: browseSite,
+        browseFavs: browseFavs,
+        saveBrowseFavs: saveBrowseFavs,
+        xFeedItems: function () { return xFeedItems; },
+        xFeedDown: function () { return xFeedDown; },
         appState: state
       };
     }
