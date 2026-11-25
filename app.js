@@ -8,7 +8,7 @@
   "use strict";
 
   var CFG = window.AURALIS_CONFIG || {};
-  var APP_VERSION = "v1.4.9";
+  var APP_VERSION = "v1.5.0";
   var COFFEE_USER = CFG.BUY_ME_A_COFFEE_USERNAME || "carlmeiselman";
   var PREFS = CFG.DEFAULT_VOICE_PREFS || { rate: 1, pitch: 1, preferredNames: [] };
 
@@ -2395,6 +2395,105 @@
       return (p && p.then) ? p : Promise.resolve();
     } catch (e) { return Promise.reject(e); }
   }
+  // v1.5.0: Trim silence toggle (default ON). Kitten speaks with
+  // natural phrase pauses and each chunk carries leading/trailing
+  // silence, so a listen has long dead stretches between words —
+  // Carl (Nov 25): "it pauses a lot between words". The toggle is
+  // persisted in this browser only. Flipping it drops the synthesis
+  // cache, so the very next sentence is made under the new setting
+  // instead of replaying audio made under the old one; in-flight
+  // audio elements are untouched (they already hold their own blob).
+  function trimSilenceEnabled() {
+    try {
+      var v = storeGet("auralis.trimSilence.v1", null);
+      return v === null ? true : !!v;
+    } catch (e) { return true; }
+  }
+  function setTrimSilenceEnabled(on) {
+    try { storeSet("auralis.trimSilence.v1", !!on); } catch (e) {}
+    synthCache = {}; synthCacheOrder = [];
+    var t = $("trimSilenceToggle"); if (t) t.checked = !!on;
+    toast(on ? "Trim silence on — pauses between words stay short." : "Trim silence off — pauses play as the voice made them.");
+  }
+  // v1.5.0: trim silence. Kitten speaks with natural phrase pauses
+  // (0.5–1.5s measured) and each chunk carries leading/trailing
+  // silence, so a listen has long dead stretches between words and
+  // between sentences. trimSilence strips leading/trailing silence
+  // and caps any internal silence gap at TRIM_SILENCE_MAX_GAP_MS
+  // (200ms). A silence run only counts after TRIM_SILENCE_MIN_RUN_MS
+  // (30ms), so quiet consonants and plosives are never clipped.
+  // Threshold 0.01 was measured, not guessed: the silent stretches
+  // of real Kitten output sit at RMS ~0.002, speech peaks at
+  // 0.89–0.91, and 0.01 sits ~5x above the floor and far below
+  // quiet speech (at 0.005 the inaudible synth fade-in counts as
+  // speech; at 0.02 quiet consonants start counting as silence).
+  // Pure function: the input is never mutated; an all-silence input
+  // is returned unchanged (a generation that produced nothing stays
+  // an error upstream, and the jsdom mock's all-zero audio must pass
+  // through untouched). The kept 200ms slice is the FIRST 200ms of
+  // the original gap — the natural decay into the pause, with the
+  // dead tail cut. Measured on real Kitten audio (Nov 25):
+  // 17–26% of duration removed, longest gap 1.5s → exactly 200ms,
+  // faster-whisper transcript of the trimmed audio word-perfect
+  // (33/33 words) — no word lost or clipped.
+  var TRIM_SILENCE_THRESHOLD = 0.01;
+  var TRIM_SILENCE_MIN_RUN_MS = 30;
+  var TRIM_SILENCE_MAX_GAP_MS = 200;
+  function trimSilence(samples, sampleRate) {
+    if (!(samples instanceof Float32Array) || !samples.length) return samples;
+    var sr = sampleRate || 24000;
+    var minRun = Math.max(1, Math.round(sr * TRIM_SILENCE_MIN_RUN_MS / 1000));
+    var maxGap = Math.round(sr * TRIM_SILENCE_MAX_GAP_MS / 1000);
+    var n = samples.length;
+    // 1. Find all silence runs (|x| < threshold for >= minRun samples).
+    var runs = [];
+    var start = -1;
+    var i;
+    for (i = 0; i <= n; i++) {
+      var silent = i < n && Math.abs(samples[i]) < TRIM_SILENCE_THRESHOLD;
+      if (silent && start < 0) start = i;
+      if (!silent && start >= 0) {
+        if (i - start >= minRun) runs.push([start, i]);
+        start = -1;
+      }
+    }
+    // 2. Decide what of each run to keep: leading/trailing runs are
+    // dropped entirely; internal runs longer than maxGap keep only
+    // their first maxGap samples; shorter internal runs stay whole.
+    var keep = [];
+    var r;
+    for (r = 0; r < runs.length; r++) {
+      var s = runs[r][0], e = runs[r][1];
+      if (s === 0 || e === n) continue;
+      if (e - s > maxGap) keep.push([s, s + maxGap]);
+      else keep.push([s, e]);
+    }
+    // 3. Copy kept spans (plus the speech between runs) into a new array.
+    var spans = [];
+    var outLen = 0;
+    var cursor = 0;
+    for (r = 0; r <= runs.length; r++) {
+      var runStart = r < runs.length ? runs[r][0] : n;
+      var runEnd = r < runs.length ? runs[r][1] : n;
+      if (runStart > cursor) { spans.push([cursor, runStart]); outLen += runStart - cursor; }
+      if (r < runs.length) {
+        var kept = null;
+        var k;
+        for (k = 0; k < keep.length; k++) { if (keep[k][0] === runStart) { kept = keep[k]; break; } }
+        if (kept) { spans.push(kept); outLen += kept[1] - kept[0]; }
+      }
+      cursor = runEnd;
+    }
+    if (outLen === 0) return samples; // all silence: return unchanged
+    var out = new Float32Array(outLen);
+    var w = 0;
+    var sp;
+    for (sp = 0; sp < spans.length; sp++) {
+      out.set(samples.subarray(spans[sp][0], spans[sp][1]), w);
+      w += spans[sp][1] - spans[sp][0];
+    }
+    return out;
+  }
   // Synthesize one sentence with Kitten. Returns { blob, durationSec,
   // samples, sampleRate }. kitten-tts-js generate() returns a RawAudio
   // ({ data: Float32Array, sampling_rate: 24000, toBlob() -> WAV Blob })
@@ -2442,9 +2541,12 @@
           throw new Error("Kitten generated no audio for this sentence.");
         }
         var sr = (result.sampling_rate || result.sampleRate || 24000);
-        var blob = null;
-        try { if (result && typeof result.toBlob === "function") blob = result.toBlob(); } catch (e) { blob = null; }
-        if (!blob) blob = float32ToWavBlob(data, sr);
+        // v1.5.0: trim silence (default ON) — the generated audio
+        // carries long dead pauses; the blob must match the samples
+        // that actually play, so it is always built from the final
+        // samples (not the library's toBlob of the raw audio).
+        if (trimSilenceEnabled()) data = trimSilence(data, sr);
+        var blob = float32ToWavBlob(data, sr);
         return { blob: blob, durationSec: data.length / sr, samples: data, sampleRate: sr };
       });
     });
@@ -3184,11 +3286,22 @@
     function finishDownload() {
       var blob;
       if (isWav) {
+        // v1.5.0: with Trim silence on, each chunk is stripped of
+        // its leading/trailing silence, so joining them raw would
+        // run sentences together with no gap at all. A short fixed
+        // gap (150ms) between sentences keeps the boundaries
+        // audible in the downloaded episode. Trim off joins raw,
+        // exactly as before.
+        var gapSamples = trimSilenceEnabled() ? Math.round(sampleRate * 0.15) : 0;
         var totalLen = 0;
         parts.forEach(function (s) { totalLen += s.length; });
-        var joined = new Float32Array(totalLen);
+        if (gapSamples && parts.length > 1) totalLen += gapSamples * (parts.length - 1);
+        var joined = new Float32Array(totalLen); // zero-filled = silence
         var off = 0;
-        parts.forEach(function (s) { joined.set(s, off); off += s.length; });
+        parts.forEach(function (s, idx) {
+          if (idx > 0 && gapSamples) off += gapSamples;
+          joined.set(s, off); off += s.length;
+        });
         blob = float32ToWavBlob(joined, sampleRate);
       } else {
         blob = new Blob(parts, { type: "audio/mpeg" });
@@ -3941,6 +4054,12 @@
     if (followToggle) followToggle.addEventListener("change", function () { setAutoFollow(followToggle.checked); });
     var followToggleB = $("followToggleBottom");
     if (followToggleB) followToggleB.addEventListener("change", function () { setAutoFollow(followToggleB.checked); });
+    // v1.5.0: Trim silence toggle (default ON, persisted per browser).
+    var trimToggle = $("trimSilenceToggle");
+    if (trimToggle) {
+      trimToggle.checked = trimSilenceEnabled();
+      trimToggle.addEventListener("change", function () { setTrimSilenceEnabled(trimToggle.checked); });
+    }
     var playBottom = $("playPauseBtnBottom");
     if (playBottom) playBottom.addEventListener("click", togglePlayPause);
     var prevBottom = $("prevBtnBottom");
@@ -4302,6 +4421,9 @@
         synthCacheSize: function () { return Object.keys(synthCache).length; },
         kittenState: function () { return { tts: !!kitten.tts, loading: !!kitten.loading, failed: !!kitten.failed }; },
         kittenVoices: KITTEN_VOICES,
+        trimSilence: trimSilence,
+        trimSilenceEnabled: trimSilenceEnabled,
+        setTrimSilenceEnabled: setTrimSilenceEnabled,
         appState: state
       };
     }

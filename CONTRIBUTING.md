@@ -40,7 +40,46 @@ git push origin v1.0.0
 gh release create v1.0.0 --title "v1.0.0 — Read anything aloud" --notes-file /tmp/auralis-v1-release-notes.md
 ```
 
-### v1.4.9 release notes (local build — not yet pushed/released)
+### v1.5.0 release notes (local build — not yet pushed/released)
+
+**Auralis v1.5.0 — Trim silence: the pauses between words stay short**
+
+Why: Carl (Nov 25, ~2:59 PM) said the KittenTTS voice "works much better now"
+but "it pauses a lot between words". The voice speaks with natural phrase
+pauses (0.5–1.5s measured) and each chunk carries leading/trailing silence.
+
+- **Trim silence (default ON):** a "Trim silence" checkbox in the player
+  strips leading/trailing silence from every synthesized chunk and caps any
+  pause between words at 200ms. Silence = |sample| < 0.01 (measured:
+  silent stretches RMS ~0.002, speech peaks 0.89–0.91); a silence run only
+  counts after 30ms, so quiet consonants are never clipped. Applied inside
+  `synthOnceKitten`, so live playback, previews, prefetch and warm-up all
+  get trimmed audio — and the Download-audio file is trimmed too (with a
+  150ms gap between sentences in the join, so sentences don't run
+  together). Toggle is persisted per browser (`auralis.trimSilence.v1`);
+  flipping it drops the synthesis cache so the next sentence is made under
+  the new setting right away. Turn it off any time to hear the pauses as
+  the voice made them.
+- **Measured on real Kitten audio before shipping:** preview-bella
+  11.81s → 8.70s (26% removed), sample-bella 21.40s → 17.01s (21%),
+  preview-jasper 7.61s → 6.31s (17%); longest gap 1.5s → exactly 200ms;
+  leading/trailing silence 0.000s after trim. Faster-whisper transcript
+  of the trimmed audio is word-perfect (33/33 words) — no word lost or
+  clipped. Full numbers in QA-v16.md.
+- **Kept from v1.4.9:** KittenTTS Nano 0.8, cached synthesis, one audio
+  path, warm-up, honest slow state, real Download ZIP link (now
+  `v1.5.0.zip`).
+- **Service worker:** cache bumped to `auralis-v1.5.0`. Footer shows
+  `v1.5.0`.
+
+```bash
+cd ~/workspace/auralis-reader
+git tag v1.5.0
+git push origin v1.5.0
+gh release create v1.5.0 --title "v1.5.0 — Trim silence: the pauses between words stay short" --notes-file /tmp/auralis-v1.5.0-release-notes.md
+```
+
+### v1.4.9 release notes (shipped Nov 24, 2026 — commit c06816a, Release live)
 
 **Auralis v1.4.9 — KittenTTS Nano replaces Kokoro as the free on-device engine**
 
